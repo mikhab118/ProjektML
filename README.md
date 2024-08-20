@@ -19,4 +19,5 @@ Jak ona ma ogarnac zeby zaczac sie uczyc. czyli co zrobic zeby ona wiedziala wgl
 
 ogarniecie zeby sie nie buntowala
 
+zmiana
 
