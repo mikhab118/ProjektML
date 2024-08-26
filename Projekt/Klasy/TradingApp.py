@@ -91,8 +91,12 @@ class TradingApp:
 
             # Sprawdzenie, czy osiągnięto take profit lub stop loss
             if self.position:
-                if (current_data['close'] >= self.position['take_profit']) or (current_data['close'] <= self.position['stop_loss']):
-                    self.close_position(current_data['close'])
+                if self.position['direction'] == "long":
+                    if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position['stop_loss']:
+                        self.close_position(current_data['close'])
+                elif self.position['direction'] == "short":
+                    if current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position['take_profit']:
+                        self.close_position(current_data['close'])
 
             # Przejście do następnej świeczki
             self.current_index += 1
@@ -124,7 +128,7 @@ class TradingApp:
             }
             self.balance -= investment_amount  # Odejmowanie kwoty inwestycji od stanu konta
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
-            print(f"Opened {direction} position at {entry_price}")
+            print(f"Opened {direction} position at {entry_price}. TP: {float(self.take_profit_entry.get())}. SL: {float(self.stop_loss_entry.get())}. Investment amount: {investment_amount}")
 
     def close_position(self, closing_price):
         if self.position:
