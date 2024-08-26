@@ -78,8 +78,16 @@ class TradingApp:
             current_data = self.data.iloc[self.current_index]
 
             # Dodanie punktu do wykresu
-            self.ax.plot(self.data['timestamp'][:self.current_index], self.data['close'][:self.current_index],
-                         color='blue')
+            if self.current_index > 0:
+                previous_close = self.data['close'].iloc[self.current_index - 1]
+                current_close = self.data['close'].iloc[self.current_index]
+                color = 'green' if current_close >= previous_close else 'red'
+                self.ax.plot(self.data['timestamp'][self.current_index-1:self.current_index+1],
+                             self.data['close'][self.current_index-1:self.current_index+1],
+                             color=color)
+
+            # Dodanie siatki do wykresu
+            self.ax.grid(True)
 
             # Aktualizacja tytułu wykresu
             self.ax.set_title(f"BTC/USDT Trading Simulator")
