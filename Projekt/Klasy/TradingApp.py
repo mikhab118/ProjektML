@@ -29,7 +29,7 @@ class TradingApp:
         self.root = root
         self.root.title("BTC/USDT Trading Simulator")
 
-        self.balance = 10000  # Początkowy stan konta
+        self.balance = 10000  # Początkowy stan konta w dolarach
         self.data = data  # Wczytane dane
         self.position = None  # Brak pozycji na starcie
         self.agent = TradingAgent(state_size=1, action_size=2)  # 1 cecha (kurs), 2 akcje (long, short)
@@ -37,20 +37,20 @@ class TradingApp:
         self.criterion = nn.MSELoss()
 
         # Interfejs użytkownika
-        self.take_profit_label = tk.Label(root, text="TAKE PROFIT")
+        self.take_profit_label = tk.Label(root, text="TAKE PROFIT ($)")
         self.take_profit_label.pack()
         self.take_profit_entry = tk.Entry(root)
         self.take_profit_entry.pack()
 
-        self.stop_loss_label = tk.Label(root, text="STOP LOSS")
+        self.stop_loss_label = tk.Label(root, text="STOP LOSS ($)")
         self.stop_loss_label.pack()
         self.stop_loss_entry = tk.Entry(root)
         self.stop_loss_entry.pack()
 
-        self.percentage_label = tk.Label(root, text="% stanu konta")
-        self.percentage_label.pack()
-        self.percentage_entry = tk.Entry(root)
-        self.percentage_entry.pack()
+        self.amount_label = tk.Label(root, text="Kwota inwestycji ($)")
+        self.amount_label.pack()
+        self.amount_entry = tk.Entry(root)
+        self.amount_entry.pack()
 
         self.long_button = tk.Button(root, text="LONG", bg='green', fg='white', command=self.long_position)
         self.long_button.pack()
@@ -58,7 +58,7 @@ class TradingApp:
         self.short_button = tk.Button(root, text="SHORT", bg='red', fg='white', command=self.short_position)
         self.short_button.pack()
 
-        self.balance_label = tk.Label(root, text=f"STAN KONTA: {self.balance:.2f}")
+        self.balance_label = tk.Label(root, text=f"STAN KONTA: ${self.balance:.2f}")
         self.balance_label.pack()
 
         # Wykres
@@ -89,6 +89,11 @@ class TradingApp:
             # Rysowanie wykresu
             self.canvas.draw()
 
+            # Sprawdzenie, czy osiągnięto take profit lub stop loss
+            if self.position:
+                if (current_data['close'] >= self.position['take_profit']) or (current_data['close'] <= self.position['stop_loss']):
+                    self.close_position(current_data['close'])
+
             # Przejście do następnej świeczki
             self.current_index += 1
 
@@ -106,42 +111,35 @@ class TradingApp:
     def place_order(self, direction):
         if self.position is None:
             entry_price = self.data['close'].iloc[self.current_index]
+            investment_amount = float(self.amount_entry.get())
+            if investment_amount > self.balance:
+                print("Nie masz wystarczającej ilości środków!")
+                return
             self.position = {
                 'direction': direction,
                 'entry_price': entry_price,
-                'take_profit': entry_price * (1 + float(self.take_profit_entry.get()) / 100),
-                'stop_loss': entry_price * (1 - float(self.stop_loss_entry.get()) / 100),
-                'percentage': float(self.percentage_entry.get())
+                'take_profit': float(self.take_profit_entry.get()),
+                'stop_loss': float(self.stop_loss_entry.get()),
+                'investment_amount': investment_amount
             }
+            self.balance -= investment_amount  # Odejmowanie kwoty inwestycji od stanu konta
+            self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
             print(f"Opened {direction} position at {entry_price}")
 
-    def close_position(self):
+    def close_position(self, closing_price):
         if self.position:
-            current_price = self.data['close'].iloc[self.current_index]
             direction = self.position['direction']
             if direction == "long":
-                profit_loss = (current_price - self.position['entry_price']) / self.position['entry_price']
+                profit_loss = (closing_price - self.position['entry_price']) / self.position['entry_price']
             else:  # short
-                profit_loss = (self.position['entry_price'] - current_price) / self.position['entry_price']
+                profit_loss = (self.position['entry_price'] - closing_price) / self.position['entry_price']
 
-            self.balance += self.balance * profit_loss * (self.position['percentage'] / 100)
-            print(f"Closed position with profit/loss: {profit_loss * 100:.2f}%")
-            self.balance_label.config(text=f"STAN KONTA: {self.balance:.2f}")
+            # Dodanie lub odjęcie zysku/straty
+            profit_loss_amount = self.position['investment_amount'] * (1 + profit_loss)
+            self.balance += profit_loss_amount
+            print(f"Closed position with profit/loss: {profit_loss * 100:.2f}% - ${profit_loss_amount:.2f}")
+            self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
             self.position = None
-
-    def calculate_reward(self):
-        if self.position:
-            current_price = self.data['close'].iloc[self.current_index]
-            direction = self.position['direction']
-            if direction == "long":
-                profit_loss = (current_price - self.position['entry_price']) / self.position['entry_price']
-            else:  # short
-                profit_loss = (self.position['entry_price'] - current_price) / self.position['entry_price']
-
-            if profit_loss > 0:
-                return profit_loss * 100  # Nagroda za zysk
-            else:
-                return profit_loss * 100  # Kara za stratę
 
 
 root = tk.Tk()
