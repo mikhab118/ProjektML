@@ -192,3 +192,6 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = TradingApp(root, df)
     root.mainloop()
+    model_filepath = 'agent_model.pth'
+    self.agent.save_model(model_filepath)
+
