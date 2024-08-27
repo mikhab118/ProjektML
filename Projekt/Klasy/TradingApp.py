@@ -23,7 +23,6 @@ ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
 df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-
 class TradingApp:
     def __init__(self, root, data):
         self.root = root
@@ -32,7 +31,7 @@ class TradingApp:
         self.balance = 10000  # Początkowy stan konta w dolarach
         self.data = data  # Wczytane dane
         self.position = None  # Brak pozycji na starcie
-        self.agent = TradingAgent(state_size=1, action_size=2)  # 1 cecha (kurs), 2 akcje (long, short)
+        self.agent = TradingAgent(state_size=4, action_size=2)  # 4 cechy, 2 akcje (long, short)
         self.optimizer = optim.Adam(self.agent.model.parameters())
         self.criterion = nn.MSELoss()
 
@@ -74,8 +73,26 @@ class TradingApp:
 
     def update_chart(self):
         if self.current_index < len(self.data):
-            # Pobieranie bieżącego wiersza danych
             current_data = self.data.iloc[self.current_index]
+
+            # Tworzenie stanu rynkowego dla agenta
+            state = [
+                current_data['close'] / current_data['open'],  # Zmiana ceny
+                current_data['close'] - self.data['close'].iloc[self.current_index-1],  # Momentum ceny
+                self.data['close'].rolling(window=5).std().iloc[self.current_index],  # Zmienność
+                current_data['close'] / self.data['high'].rolling(window=14).max().iloc[self.current_index]  # RSI proxy
+            ]
+
+            # Agent podejmuje decyzję
+            action = self.agent.act(state)
+            investment_amount = self.agent.choose_investment_amount(self.balance)
+
+            if action == 0:  # Long
+                tp, sl = self.agent.adjust_take_profit_stop_loss(state)
+                self.place_order('long', tp, sl, investment_amount)
+            elif action == 1:  # Short
+                tp, sl = self.agent.adjust_take_profit_stop_loss(state)
+                self.place_order('short', tp, sl, investment_amount)
 
             # Dodanie punktu do wykresu
             if self.current_index > 0:
@@ -120,23 +137,28 @@ class TradingApp:
     def short_position(self):
         self.place_order("short")
 
-    def place_order(self, direction):
+    def place_order(self, direction, take_profit=None, stop_loss=None, investment_amount=None):
         if self.position is None:
             entry_price = self.data['close'].iloc[self.current_index]
-            investment_amount = float(self.amount_entry.get())
+            if investment_amount is None:
+                investment_amount = float(self.amount_entry.get())
             if investment_amount > self.balance:
                 print("Nie masz wystarczającej ilości środków!")
                 return
+            if take_profit is None:
+                take_profit = float(self.take_profit_entry.get())
+            if stop_loss is None:
+                stop_loss = float(self.stop_loss_entry.get())
             self.position = {
                 'direction': direction,
                 'entry_price': entry_price,
-                'take_profit': float(self.take_profit_entry.get()),
-                'stop_loss': float(self.stop_loss_entry.get()),
+                'take_profit': take_profit,
+                'stop_loss': stop_loss,
                 'investment_amount': investment_amount
             }
             self.balance -= investment_amount  # Odejmowanie kwoty inwestycji od stanu konta
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
-            print(f"Opened {direction} position at {entry_price}. TP: {float(self.take_profit_entry.get())}. SL: {float(self.stop_loss_entry.get())}. Investment amount: {investment_amount}")
+            print(f"Opened {direction} position at {entry_price}. TP: {take_profit}. SL: {stop_loss}. Investment amount: {investment_amount}")
 
     def close_position(self, closing_price):
         if self.position:
@@ -152,7 +174,6 @@ class TradingApp:
             print(f"Closed position with profit/loss: {profit_loss * 100:.2f}% - ${profit_loss_amount:.2f}")
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
             self.position = None
-
 
 root = tk.Tk()
 
