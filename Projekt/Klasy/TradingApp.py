@@ -3,25 +3,12 @@ import pandas as pd
 import tkinter as tk
 from matplotlib import pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from agent import TradingAgent
+import os
+from lstm_agent import LSTMTradingAgent  # Import agenta z innego pliku
 import torch.optim as optim
 import torch.nn as nn
 import numpy as np
 from data_processing import fetch_data_in_range
-
-# Pobranie i przetworzenie danych
-exchange = ccxt.binance()
-symbol = 'BTC/USDT'
-timeframe = '1h'
-since = '2023-01-01T00:00:00Z'
-until = '2023-02-01T00:00:00Z'
-
-# Pobieranie danych
-ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
-
-# Konwersja do DataFrame
-df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
 class TradingApp:
     def __init__(self, root, data):
@@ -31,8 +18,17 @@ class TradingApp:
         self.balance = 10000  # Początkowy stan konta w dolarach
         self.data = data  # Wczytane dane
         self.position = None  # Brak pozycji na starcie
-        self.agent = TradingAgent(state_size=4, action_size=2)  # 4 cechy, 2 akcje (long, short)
-        self.optimizer = optim.Adam(self.agent.model.parameters())
+        self.agent = LSTMTradingAgent(input_size=1, hidden_size=50, output_size=2)  # Agent
+
+        # Jeśli istnieje plik modelu, wczytaj go
+        model_filepath = 'agent_model.pth'
+        if os.path.exists(model_filepath):
+            self.agent.load_model(model_filepath)
+            print("Model załadowany z pliku:", model_filepath)
+        else:
+            print("Brak modelu do załadowania, agent zaczyna naukę od zera.")
+
+        self.optimizer = optim.Adam(self.agent.parameters())
         self.criterion = nn.MSELoss()
 
         # Interfejs użytkownika
@@ -69,30 +65,14 @@ class TradingApp:
 
     def start_simulation(self):
         self.current_index = 0
+        print("Rozpoczynanie symulacji...")
         self.update_chart()
 
     def update_chart(self):
         if self.current_index < len(self.data):
+            # Pobieranie bieżącego wiersza danych
             current_data = self.data.iloc[self.current_index]
-
-            # Tworzenie stanu rynkowego dla agenta
-            state = [
-                current_data['close'] / current_data['open'],  # Zmiana ceny
-                current_data['close'] - self.data['close'].iloc[self.current_index-1],  # Momentum ceny
-                self.data['close'].rolling(window=5).std().iloc[self.current_index],  # Zmienność
-                current_data['close'] / self.data['high'].rolling(window=14).max().iloc[self.current_index]  # RSI proxy
-            ]
-
-            # Agent podejmuje decyzję
-            action = self.agent.act(state)
-            investment_amount = self.agent.choose_investment_amount(self.balance)
-
-            if action == 0:  # Long
-                tp, sl = self.agent.adjust_take_profit_stop_loss(state)
-                self.place_order('long', tp, sl, investment_amount)
-            elif action == 1:  # Short
-                tp, sl = self.agent.adjust_take_profit_stop_loss(state)
-                self.place_order('short', tp, sl, investment_amount)
+            print(f"Agent analizuje cenę: {current_data['close']}")
 
             # Dodanie punktu do wykresu
             if self.current_index > 0:
@@ -114,22 +94,37 @@ class TradingApp:
             # Rysowanie wykresu
             self.canvas.draw()
 
+            # Agent podejmuje decyzje
+            self.agent_act(current_data['close'])
+
             # Sprawdzenie, czy osiągnięto take profit lub stop loss
             if self.position:
                 if self.position['direction'] == "long":
                     if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position['stop_loss']:
+                        print("Zamykanie pozycji LONG.")
                         self.close_position(current_data['close'])
                 elif self.position['direction'] == "short":
                     if current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position['take_profit']:
+                        print("Zamykanie pozycji SHORT.")
                         self.close_position(current_data['close'])
 
             # Przejście do następnej świeczki
             self.current_index += 1
 
-            # Uruchomienie funkcji update_chart ponownie po 200 ms (1 minuta odpowiada 0,2 sekundy)
-            self.root.after(200, self.update_chart)
+            # Uruchomienie funkcji update_chart ponownie po 1000 ms (1 minuta odpowiada 1 sekundzie)
+            self.root.after(1000, self.update_chart)
         else:
             print("Symulacja zakończona.")
+
+    def agent_act(self, current_price):
+        print(f"Agent analizuje cenę: {current_price}")
+        action = self.agent.act(current_price)
+        if action == 0:
+            print("Agent wybrał: LONG")
+            self.long_position()
+        elif action == 1:
+            print("Agent wybrał: SHORT")
+            self.short_position()
 
     def long_position(self):
         self.place_order("long")
@@ -137,18 +132,20 @@ class TradingApp:
     def short_position(self):
         self.place_order("short")
 
-    def place_order(self, direction, take_profit=None, stop_loss=None, investment_amount=None):
+    def place_order(self, direction):
         if self.position is None:
             entry_price = self.data['close'].iloc[self.current_index]
-            if investment_amount is None:
-                investment_amount = float(self.amount_entry.get())
+            investment_amount = self.balance * 0.1  # 10% stanu konta
             if investment_amount > self.balance:
                 print("Nie masz wystarczającej ilości środków!")
                 return
-            if take_profit is None:
-                take_profit = float(self.take_profit_entry.get())
-            if stop_loss is None:
-                stop_loss = float(self.stop_loss_entry.get())
+            if direction == "long":
+                take_profit = entry_price * 1.03
+                stop_loss = entry_price * 0.97
+            elif direction == "short":
+                take_profit = entry_price * 0.97
+                stop_loss = entry_price * 1.03
+
             self.position = {
                 'direction': direction,
                 'entry_price': entry_price,
@@ -173,10 +170,25 @@ class TradingApp:
             self.balance += profit_loss_amount
             print(f"Closed position with profit/loss: {profit_loss * 100:.2f}% - ${profit_loss_amount:.2f}")
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
+            self.agent.store_outcome(profit_loss)  # Przechowywanie wyniku w agencie
             self.position = None
 
-root = tk.Tk()
 
-# Przekaż dane do aplikacji tradingowej
-app = TradingApp(root, df)
-root.mainloop()
+if __name__ == "__main__":
+    # Pobranie i przetworzenie danych
+    exchange = ccxt.binance()
+    symbol = 'BTC/USDT'
+    timeframe = '1h'
+    since = '2023-01-01T00:00:00Z'
+    until = '2023-02-01T00:00:00Z'
+
+    # Pobieranie danych
+    ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
+
+    # Konwersja do DataFrame
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+    root = tk.Tk()
+    app = TradingApp(root, df)
+    root.mainloop()
