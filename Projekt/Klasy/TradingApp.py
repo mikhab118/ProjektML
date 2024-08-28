@@ -10,6 +10,7 @@ import torch.nn as nn
 import numpy as np
 from data_processing import fetch_data_in_range
 
+
 class TradingApp:
     def __init__(self, root, data):
         self.root = root
@@ -83,8 +84,8 @@ class TradingApp:
                 previous_close = self.data['close'].iloc[self.current_index - 1]
                 current_close = self.data['close'].iloc[self.current_index]
                 color = 'green' if current_close >= previous_close else 'red'
-                self.ax.plot(self.data['timestamp'][self.current_index-1:self.current_index+1],
-                             self.data['close'][self.current_index-1:self.current_index+1],
+                self.ax.plot(self.data['timestamp'][self.current_index - 1:self.current_index + 1],
+                             self.data['close'][self.current_index - 1:self.current_index + 1],
                              color=color)
 
             # Dodanie siatki do wykresu
@@ -104,11 +105,13 @@ class TradingApp:
             # Sprawdzenie, czy osiągnięto take profit lub stop loss
             if self.position:
                 if self.position['direction'] == "long":
-                    if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position['stop_loss']:
+                    if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position[
+                        'stop_loss']:
                         print("Zamykanie pozycji LONG.")
                         self.close_position(current_data['close'])
                 elif self.position['direction'] == "short":
-                    if current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position['take_profit']:
+                    if current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position[
+                        'take_profit']:
                         print("Zamykanie pozycji SHORT.")
                         self.close_position(current_data['close'])
 
@@ -116,7 +119,7 @@ class TradingApp:
             self.wynik -= 1
             self.wynik_label.config(text=f"WYNIK: {self.wynik:.2f}")
             print(f"Wynik: {self.wynik}")
-            
+
             # Przejście do następnej świeczki
             self.current_index += 1
 
@@ -166,7 +169,8 @@ class TradingApp:
             }
             self.balance -= investment_amount  # Odejmowanie kwoty inwestycji od stanu konta
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
-            print(f"Opened {direction} position at {entry_price}. TP: {take_profit}. SL: {stop_loss}. Investment amount: {investment_amount}")
+            print(
+                f"Opened {direction} position at {entry_price}. TP: {take_profit}. SL: {stop_loss}. Investment amount: {investment_amount}")
 
     def close_position(self, closing_price):
         if self.position:
@@ -186,7 +190,7 @@ class TradingApp:
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
             self.wynik_label.config(text=f"WYNIK: {self.wynik:.2f}")
             print(f"Nowy wynik: {self.wynik}")
-            
+
             # Przekazanie nagrody lub kary agentowi
             new_state = closing_price
             done = False  # Możesz ustawić True, jeśli to kończy epizod
@@ -200,7 +204,7 @@ if __name__ == "__main__":
     symbol = 'BTC/USDT'
     timeframe = '1h'
     since = '2024-01-01T00:00:00Z'
-    until = '2024-01-11T00:00:00Z'
+    until = '2024-02-11T00:00:00Z'
 
     # Pobieranie danych
     ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
