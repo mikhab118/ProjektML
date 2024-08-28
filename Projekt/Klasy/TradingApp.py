@@ -20,7 +20,7 @@ class TradingApp:
         self.wynik = 10000  # Początkowy wynik
         self.data = data  # Wczytane dane
         self.position = None  # Brak pozycji na starcie
-        self.agent = LSTMTradingAgent(input_size=1, hidden_size=50, output_size=2)  # Agent
+        self.agent = LSTMTradingAgent(input_size=3, hidden_size=50, output_size=2)  # Agent z 3 cechami
 
         # Jeśli istnieje plik modelu, wczytaj go
         model_filepath = 'agent_model.pth'
@@ -30,7 +30,7 @@ class TradingApp:
         else:
             print("Brak modelu do załadowania, agent zaczyna naukę od zera.")
 
-        self.optimizer = optim.Adam(self.agent.parameters())
+        self.optimizer = optim.AdamW(self.agent.parameters())
         self.criterion = nn.MSELoss()
 
         # Interfejs użytkownika
@@ -77,6 +77,18 @@ class TradingApp:
         if self.current_index < len(self.data):
             # Pobieranie bieżącego wiersza danych
             current_data = self.data.iloc[self.current_index]
+
+            # Feature engineering: moving average and volume
+            window_size = 10
+            if self.current_index >= window_size:
+                moving_average = np.mean(self.data['close'].iloc[self.current_index - window_size:self.current_index])
+            else:
+                moving_average = current_data['close']  # W przypadku braku wystarczającej liczby danych
+
+            volume = current_data['volume']
+
+            state = np.array([current_data['close'], moving_average, volume])
+
             print(f"Agent analizuje cenę: {current_data['close']}")
 
             # Dodanie punktu do wykresu
@@ -100,7 +112,7 @@ class TradingApp:
             self.canvas.draw()
 
             # Agent podejmuje decyzje
-            self.agent_act(current_data['close'])
+            self.agent_act(current_data['close'], moving_average, volume)
 
             # Sprawdzenie, czy osiągnięto take profit lub stop loss
             if self.position:
@@ -108,12 +120,12 @@ class TradingApp:
                     if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position[
                         'stop_loss']:
                         print("Zamykanie pozycji LONG.")
-                        self.close_position(current_data['close'])
+                        self.close_position(current_data['close'], moving_average, volume)
                 elif self.position['direction'] == "short":
                     if current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position[
                         'take_profit']:
                         print("Zamykanie pozycji SHORT.")
-                        self.close_position(current_data['close'])
+                        self.close_position(current_data['close'], moving_average, volume)
 
             # Odejmowanie wyniku o 1 co aktualizację wykresu
             self.wynik -= 1
@@ -130,9 +142,10 @@ class TradingApp:
             self.agent.save_model(model_filepath)
             print("Symulacja zakończona.")
 
-    def agent_act(self, current_price):
+    def agent_act(self, current_price, moving_average, volume):
         print(f"Agent analizuje cenę: {current_price}")
-        action = self.agent.act(current_price)
+        state = np.array([current_price, moving_average, volume])
+        action = self.agent.act(state)
         if action == 0:
             print("Agent wybrał: LONG")
             self.long_position()
@@ -156,15 +169,18 @@ class TradingApp:
             if direction == "long":
                 take_profit = entry_price * 1.03
                 stop_loss = entry_price * 0.97
+                trailing_stop_loss = entry_price * 0.98
             elif direction == "short":
                 take_profit = entry_price * 0.97
                 stop_loss = entry_price * 1.03
+                trailing_stop_loss = entry_price * 1.02
 
             self.position = {
                 'direction': direction,
                 'entry_price': entry_price,
                 'take_profit': take_profit,
                 'stop_loss': stop_loss,
+                'trailing_stop_loss': trailing_stop_loss,
                 'investment_amount': investment_amount
             }
             self.balance -= investment_amount  # Odejmowanie kwoty inwestycji od stanu konta
@@ -172,7 +188,7 @@ class TradingApp:
             print(
                 f"Opened {direction} position at {entry_price}. TP: {take_profit}. SL: {stop_loss}. Investment amount: {investment_amount}")
 
-    def close_position(self, closing_price):
+    def close_position(self, closing_price, moving_average, volume):
         if self.position:
             direction = self.position['direction']
             initial_balance = self.balance  # Zapamiętanie stanu konta przed zamknięciem pozycji
@@ -181,6 +197,12 @@ class TradingApp:
                 profit_loss = (closing_price - self.position['entry_price']) / self.position['entry_price']
             else:  # short
                 profit_loss = (self.position['entry_price'] - closing_price) / self.position['entry_price']
+
+            # Dynamiczny stop-loss
+            if direction == "long" and closing_price < self.position['trailing_stop_loss']:
+                self.position['stop_loss'] = closing_price
+            elif direction == "short" and closing_price > self.position['trailing_stop_loss']:
+                self.position['stop_loss'] = closing_price
 
             # Dodanie lub odjęcie zysku/straty
             profit_loss_amount = self.position['investment_amount'] * (1 + profit_loss)
@@ -191,10 +213,16 @@ class TradingApp:
             self.wynik_label.config(text=f"WYNIK: {self.wynik:.2f}")
             print(f"Nowy wynik: {self.wynik}")
 
-            # Przekazanie nagrody lub kary agentowi
-            new_state = closing_price
+            # Dodatkowe czynniki do dynamicznej nagrody
+            holding_time = 5  # Przykładowy czas trzymania, należy obliczyć realny czas na podstawie danych
+            market_volatility = np.std(
+                self.data['close'].iloc[self.current_index - 10:self.current_index])  # Przykładowa zmienność rynku
+
+            # Przekazanie nagrody agentowi
+            new_state = np.array([closing_price, moving_average, volume])
             done = False  # Możesz ustawić True, jeśli to kończy epizod
-            self.agent.reward(profit_loss_amount - self.position['investment_amount'], new_state, done)
+            self.agent.reward(profit_loss_amount - self.position['investment_amount'], holding_time, market_volatility,
+                              new_state, done)
             self.position = None
 
 
@@ -204,7 +232,7 @@ if __name__ == "__main__":
     symbol = 'BTC/USDT'
     timeframe = '1h'
     since = '2024-01-01T00:00:00Z'
-    until = '2024-02-11T00:00:00Z'
+    until = '2024-01-11T00:00:00Z'
 
     # Pobieranie danych
     ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
