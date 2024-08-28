@@ -117,3 +117,4 @@ class LSTMTradingAgent(nn.Module):
 
     def load_model(self, filepath):
         self.load_state_dict(torch.load(filepath))
+
