@@ -17,10 +17,17 @@ class LSTMTradingAgent(nn.Module):
         self.epsilon_decay = epsilon_decay  # Współczynnik dekrementacji epsilonu
         self.replay_memory = []  # Lista do przechowywania doświadczeń (stan, akcja, nagroda)
 
-        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)
-        self.fc = nn.Linear(hidden_size, output_size)
+        # Double Q-learning: online network & target network
+        self.online_network = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.target_network = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.fc_online = nn.Linear(hidden_size, output_size)
+        self.fc_target = nn.Linear(hidden_size, output_size)
         self.optimizer = optim.Adam(self.parameters())
         self.criterion = nn.MSELoss()
+
+        # Synchronize the weights of the target network with the online network
+        self.target_network.load_state_dict(self.online_network.state_dict())
+        self.fc_target.load_state_dict(self.fc_online.state_dict())
 
     def act(self, state):
         self.eval()
@@ -55,8 +62,8 @@ class LSTMTradingAgent(nn.Module):
         h0 = torch.zeros(1, x.size(0), self.hidden_size).to(x.device)
         c0 = torch.zeros(1, x.size(0), self.hidden_size).to(x.device)
 
-        out, _ = self.lstm(x, (h0, c0))
-        out = self.fc(out[:, -1, :])
+        out, _ = self.online_network(x, (h0, c0))
+        out = self.fc_online(out[:, -1, :])
         return out
 
     def train_agent(self):
@@ -76,13 +83,19 @@ class LSTMTradingAgent(nn.Module):
         q_values = self(states)
         q_target = q_values.clone().detach()
 
-        next_q_values = self(next_states).max(1)[0]
+        next_q_values_online = self(next_states).max(1)[0]
+        next_q_values_target = self.target_network(next_states)[0].max(1)[0]
+
         for i in range(len(batch)):
-            q_target[i, actions[i]] = rewards[i] + (1 - dones[i]) * next_q_values[i]
+            q_target[i, actions[i]] = rewards[i] + (1 - dones[i]) * next_q_values_target[i]
 
         loss = self.criterion(q_values, q_target)
         loss.backward()
         self.optimizer.step()
+
+        # Update the target network weights
+        self.target_network.load_state_dict(self.online_network.state_dict())
+        self.fc_target.load_state_dict(self.fc_online.state_dict())
 
     def save_model(self, filepath):
         torch.save(self.state_dict(), filepath)
