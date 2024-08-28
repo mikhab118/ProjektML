@@ -4,6 +4,41 @@ import torch.optim as optim
 import numpy as np
 import random
 
+class Node:
+    def __init__(self, state, action=None, parent=None):
+        self.state = state
+        self.action = action
+        self.parent = parent
+        self.children = []
+        self.untried_actions = self.get_possible_actions(state)  # Możliwe akcje na podstawie stanu
+        self.visits = 0
+        self.value = 0.0
+
+    def get_possible_actions(self, state):
+        # Zwraca listę możliwych akcji na podstawie stanu
+        return [0, 1]  # Przykładowe akcje: 0 = LONG, 1 = SHORT
+
+    def is_fully_expanded(self):
+        return len(self.untried_actions) == 0
+
+    def best_child(self, exploration_param=1.414):
+        choices_weights = [
+            (child.value / child.visits) + exploration_param * np.sqrt(np.log(self.visits) / child.visits)
+            for child in self.children
+        ]
+        return self.children[np.argmax(choices_weights)]
+
+    def expand(self):
+        action = self.untried_actions.pop(0)
+        next_state = self.simulate_action(action)  # Symulacja nowego stanu po wykonaniu akcji
+        child_node = Node(next_state, action=action, parent=self)
+        self.children.append(child_node)
+        return child_node
+
+    def simulate_action(self, action):
+        # Tutaj dodaj logikę do symulacji nowego stanu po wykonaniu akcji
+        # Dla uproszczenia, użyjemy tego samego stanu, ale w praktyce powinieneś tutaj zaktualizować stan
+        return self.state
 
 class LSTMTradingAgent(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, memory_size=1000, batch_size=32, epsilon_start=1.0,
@@ -35,23 +70,53 @@ class LSTMTradingAgent(nn.Module):
         self.eval()
         with torch.no_grad():
             state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-            if random.random() < self.epsilon:
-                action = random.randint(0, 1)
-                print("Eksploracja: agent wybiera losowe działanie:", "LONG" if action == 0 else "SHORT")
-            else:
-                q_values = self.forward(state)
-                action = torch.argmax(q_values, dim=1).item()
-                print("Eksploatacja: agent wybiera działanie na podstawie Q-values:",
-                      "LONG" if action == 0 else "SHORT")
-
-        # Dekrementacja epsilonu po każdym działaniu
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+            action = self.monte_carlo_tree_search(state)
 
         self.train()
         self.last_state = state
         self.last_action = action
         return action
+
+    def monte_carlo_tree_search(self, state):
+        root = Node(state)
+        for _ in range(100):  # Liczba symulacji
+            node = self.tree_policy(root)
+            reward = self.simulate(node.state)
+            self.backpropagate(node, reward)
+
+        return self.best_action(root)
+
+    def tree_policy(self, node):
+        # Faza selekcji i ekspansji
+        while not self.is_terminal(node):
+            if not node.is_fully_expanded():
+                return node.expand()
+            else:
+                node = node.best_child()
+        return node
+
+    def is_terminal(self, node):
+        # Sprawdza, czy węzeł jest węzłem terminalnym
+        return len(node.untried_actions) == 0
+
+    def simulate(self, state):
+        # Symulacja stanu (tutaj możesz dodać własną logikę symulacji)
+        return random.uniform(-1, 1)  # Zwraca losową nagrodę jako symulację
+
+    def backpropagate(self, node, reward):
+        # Propagacja wsteczna wartości nagrody przez drzewo
+        while node is not None:
+            node.visits += 1
+            node.value += reward
+            node = node.parent
+
+    def best_action(self, root):
+        if not root.children:
+            print("Brak dzieci, sprawdź logikę ekspansji")
+            return random.choice([0, 1])  # Domyślna akcja, np. losowy wybór LONG lub SHORT
+
+        best_child = max(root.children, key=lambda child: child.value)
+        return best_child.action
 
     def reward(self, profit_loss, holding_time, market_volatility, new_state, done):
         """
@@ -117,4 +182,3 @@ class LSTMTradingAgent(nn.Module):
 
     def load_model(self, filepath):
         self.load_state_dict(torch.load(filepath))
-
