@@ -57,6 +57,9 @@ class TradingApp:
         self.balance_label = tk.Label(root, text=f"STAN KONTA: ${self.balance:.2f}")
         self.balance_label.pack()
 
+        self.wynik_label = tk.Label(root, text=f"WYNIK: {self.wynik:.2f}")
+        self.wynik_label.pack()
+
         # Wykres
         self.figure, self.ax = plt.subplots()
         self.canvas = FigureCanvasTkAgg(self.figure, master=root)
@@ -111,8 +114,9 @@ class TradingApp:
 
             # Odejmowanie wyniku o 1 co aktualizację wykresu
             self.wynik -= 1
+            self.wynik_label.config(text=f"WYNIK: {self.wynik:.2f}")
             print(f"Wynik: {self.wynik}")
-
+            
             # Przejście do następnej świeczki
             self.current_index += 1
 
@@ -180,8 +184,9 @@ class TradingApp:
             self.wynik += profit_loss_amount - self.position['investment_amount']  # Aktualizacja wyniku
             print(f"Closed position with profit/loss: {profit_loss * 100:.2f}% - ${profit_loss_amount:.2f}")
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
+            self.wynik_label.config(text=f"WYNIK: {self.wynik:.2f}")
             print(f"Nowy wynik: {self.wynik}")
-
+            
             # Przekazanie nagrody lub kary agentowi
             new_state = closing_price
             done = False  # Możesz ustawić True, jeśli to kończy epizod
