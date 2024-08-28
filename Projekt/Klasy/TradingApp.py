@@ -11,6 +11,7 @@ import numpy as np
 from data_processing import fetch_data_in_range
 
 
+
 class TradingApp:
     def __init__(self, root, data):
         self.root = root
