@@ -22,7 +22,9 @@ class LSTMTradingAgent(nn.Module):
         self.target_network = nn.LSTM(input_size, hidden_size, batch_first=True)
         self.fc_online = nn.Linear(hidden_size, output_size)
         self.fc_target = nn.Linear(hidden_size, output_size)
-        self.optimizer = optim.Adam(self.parameters())
+
+        # Zmiana optymalizatora na AdamW
+        self.optimizer = optim.AdamW(self.parameters())
         self.criterion = nn.MSELoss()
 
         # Synchronize the weights of the target network with the online network
@@ -32,7 +34,7 @@ class LSTMTradingAgent(nn.Module):
     def act(self, state):
         self.eval()
         with torch.no_grad():
-            state = torch.FloatTensor([state]).unsqueeze(0).unsqueeze(0)
+            state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
             if random.random() < self.epsilon:
                 action = random.randint(0, 1)
                 print("Eksploracja: agent wybiera losowe działanie:", "LONG" if action == 0 else "SHORT")
@@ -51,7 +53,20 @@ class LSTMTradingAgent(nn.Module):
         self.last_action = action
         return action
 
-    def reward(self, reward_value, new_state, done):
+    def reward(self, profit_loss, holding_time, market_volatility, new_state, done):
+        """
+        Dynamiczna funkcja nagrody uwzględniająca zysk/stratę, czas trzymania pozycji oraz zmienność rynku.
+        """
+        reward_value = profit_loss
+
+        # Kara za długi czas trzymania pozycji
+        if holding_time > 10:  # przykład
+            reward_value -= holding_time * 0.01
+
+        # Kara za zmienność rynku (większa zmienność = większe ryzyko)
+        reward_value -= market_volatility * 0.05
+
+        # Przechowywanie nagrody w pamięci
         self.replay_memory.append((self.last_state, self.last_action, reward_value, new_state, done))
         if len(self.replay_memory) > self.memory_size:
             self.replay_memory.pop(0)
