@@ -1,6 +1,8 @@
 import ccxt
 import pandas as pd
 import tkinter as tk
+
+import self
 from matplotlib import pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import os
@@ -114,6 +116,8 @@ class TradingApp:
             # Uruchomienie funkcji update_chart ponownie po 1000 ms (1 minuta odpowiada 1 sekundzie)
             self.root.after(1000, self.update_chart)
         else:
+            model_filepath = 'agent_model.pth'
+            self.agent.save_model(model_filepath)
             print("Symulacja zakończona.")
 
     def agent_act(self, current_price):
@@ -179,8 +183,8 @@ if __name__ == "__main__":
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
     timeframe = '1h'
-    since = '2023-01-01T00:00:00Z'
-    until = '2023-02-01T00:00:00Z'
+    since = '2024-01-01T00:00:00Z'
+    until = '2024-01-11T00:00:00Z'
 
     # Pobieranie danych
     ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
@@ -192,6 +196,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = TradingApp(root, df)
     root.mainloop()
-    model_filepath = 'agent_model.pth'
-    self.agent.save_model(model_filepath)
-
