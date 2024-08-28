@@ -1,8 +1,6 @@
 import ccxt
 import pandas as pd
 import tkinter as tk
-
-import self
 from matplotlib import pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import os
@@ -18,6 +16,7 @@ class TradingApp:
         self.root.title("BTC/USDT Trading Simulator")
 
         self.balance = 10000  # Początkowy stan konta w dolarach
+        self.wynik = 10000  # Początkowy wynik
         self.data = data  # Wczytane dane
         self.position = None  # Brak pozycji na starcie
         self.agent = LSTMTradingAgent(input_size=1, hidden_size=50, output_size=2)  # Agent
@@ -110,6 +109,10 @@ class TradingApp:
                         print("Zamykanie pozycji SHORT.")
                         self.close_position(current_data['close'])
 
+            # Odejmowanie wyniku o 1 co aktualizację wykresu
+            self.wynik -= 1
+            print(f"Wynik: {self.wynik}")
+
             # Przejście do następnej świeczki
             self.current_index += 1
 
@@ -164,6 +167,8 @@ class TradingApp:
     def close_position(self, closing_price):
         if self.position:
             direction = self.position['direction']
+            initial_balance = self.balance  # Zapamiętanie stanu konta przed zamknięciem pozycji
+
             if direction == "long":
                 profit_loss = (closing_price - self.position['entry_price']) / self.position['entry_price']
             else:  # short
@@ -172,9 +177,15 @@ class TradingApp:
             # Dodanie lub odjęcie zysku/straty
             profit_loss_amount = self.position['investment_amount'] * (1 + profit_loss)
             self.balance += profit_loss_amount
+            self.wynik += profit_loss_amount - self.position['investment_amount']  # Aktualizacja wyniku
             print(f"Closed position with profit/loss: {profit_loss * 100:.2f}% - ${profit_loss_amount:.2f}")
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
-            self.agent.store_outcome(profit_loss)  # Przechowywanie wyniku w agencie
+            print(f"Nowy wynik: {self.wynik}")
+
+            # Przekazanie nagrody lub kary agentowi
+            new_state = closing_price
+            done = False  # Możesz ustawić True, jeśli to kończy epizod
+            self.agent.reward(profit_loss_amount - self.position['investment_amount'], new_state, done)
             self.position = None
 
 
