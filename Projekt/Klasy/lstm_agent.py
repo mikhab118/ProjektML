@@ -4,6 +4,7 @@ import torch.optim as optim
 import numpy as np
 import random
 
+
 class Node:
     def __init__(self, state, action=None, parent=None):
         self.state = state
@@ -40,6 +41,7 @@ class Node:
         # Dla uproszczenia, użyjemy tego samego stanu, ale w praktyce powinieneś tutaj zaktualizować stan
         return self.state
 
+
 class LSTMTradingAgent(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, memory_size=1000, batch_size=32, epsilon_start=1.0,
                  epsilon_min=0.01, epsilon_decay=0.995):
@@ -66,6 +68,9 @@ class LSTMTradingAgent(nn.Module):
         self.target_network.load_state_dict(self.online_network.state_dict())
         self.fc_target.load_state_dict(self.fc_online.state_dict())
 
+        # Inicjalizacja atrybutu last_action
+        self.last_action = None
+
     def act(self, state):
         self.eval()
         with torch.no_grad():
@@ -74,14 +79,14 @@ class LSTMTradingAgent(nn.Module):
 
         self.train()
         self.last_state = state
-        self.last_action = action
+        self.last_action = action  # Ustawienie ostatniej akcji
         return action
 
     def monte_carlo_tree_search(self, state):
         root = Node(state)
         for _ in range(100):  # Liczba symulacji
             node = self.tree_policy(root)
-            reward = self.simulate(node.state)
+            reward, _ = self.simulate(node.state)  # Dodano zwracanie nowego stanu
             self.backpropagate(node, reward)
 
         return self.best_action(root)
@@ -100,8 +105,38 @@ class LSTMTradingAgent(nn.Module):
         return len(node.untried_actions) == 0
 
     def simulate(self, state):
-        # Symulacja stanu (tutaj możesz dodać własną logikę symulacji)
-        return random.uniform(-1, 1)  # Zwraca losową nagrodę jako symulację
+        """
+        Symulacja nowego stanu na podstawie bieżącego stanu oraz wprowadzenie losowej zmienności.
+        """
+        # Rozpakowanie stanu
+        current_price = state[0, 0, 0].item()  # Zakładamy, że cena jest pierwszym elementem w stanie
+        moving_average = state[0, 0, 1].item()  # Zakładamy, że średnia krocząca jest drugim elementem
+        volume = state[0, 0, 2].item()  # Zakładamy, że wolumen jest trzecim elementem
+
+        # Ustalanie zmienności na podstawie różnicy między ceną a średnią kroczącą
+        price_deviation = current_price - moving_average
+
+        # Wprowadzenie losowej zmienności
+        volatility_factor = np.random.normal(0, 1)
+
+        # Symulacja nowej ceny: aktualna cena plus zmiana wynikająca z trendu i losowej zmienności
+        simulated_price_change = price_deviation * 0.1 + volatility_factor * 0.02
+        simulated_price = current_price + simulated_price_change
+
+        # Nagroda zależna od symulowanej zmiany ceny
+        if simulated_price > current_price:
+            reward = 1  # Zysk dla pozycji long
+        else:
+            reward = -1  # Strata dla pozycji long
+
+        # Jeśli agent wybrał short, odwracamy logikę nagrody
+        if self.last_action == 1:  # 1 = short
+            reward = -reward
+
+        # Tworzymy nowy stan na podstawie symulowanych wartości
+        new_state = np.array([simulated_price, moving_average, volume])
+
+        return reward, new_state
 
     def backpropagate(self, node, reward):
         # Propagacja wsteczna wartości nagrody przez drzewo
