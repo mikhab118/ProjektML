@@ -1,5 +1,3 @@
-# lstm_trading_agent.py
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -18,8 +16,8 @@ class Node:
         self.value = 0.0
 
     def get_possible_actions(self, state):
-        # Zwraca listę możliwych akcji na podstawie stanu
-        return [0, 1]  # Przykładowe akcje: 0 = LONG, 1 = SHORT
+        # Możliwe akcje: 0 = LONG, 1 = SHORT, 2 = No-Op
+        return [0, 1, 2]
 
     def is_fully_expanded(self):
         return len(self.untried_actions) == 0
@@ -75,15 +73,25 @@ class LSTMTradingAgent(nn.Module):
 
     def act(self, state):
         if random.random() < self.epsilon:
-            action = random.choice([0, 1])
-            print("Agent wybiera akcję losowo:", "LONG" if action == 0 else "SHORT")
+            action = random.choice([0, 1, 2])  # Dodanie No-Op do losowego wyboru
+            print("Agent wybiera akcję losowo:", "LONG" if action == 0 else "SHORT" if action == 1 else "No-Op")
         else:
             self.eval()
             with torch.no_grad():
                 state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
                 action = self.monte_carlo_tree_search(state_tensor)
 
-                print("Agent wybiera akcję na podstawie MCTS z Q-values:", "LONG" if action == 0 else "SHORT")
+                # Dodanie progu pewności dla otwierania pozycji
+                q_values = self.fc_online(self.online_network(state_tensor)[0])
+                confidence_threshold = 0.6  # Przykładowy próg pewności
+                if torch.max(q_values).item() < confidence_threshold:
+                    action = 2  # No-Op, jeśli pewność jest za niska
+
+                # Dodanie stochastyczności
+                if action != 2 and random.random() > 0.7:  # 30% szans, że agent wybierze No-Op nawet przy pewnej decyzji
+                    action = 2
+
+                print("Agent wybiera akcję na podstawie MCTS z Q-values:", "LONG" if action == 0 else "SHORT" if action == 1 else "No-Op")
             self.train()
 
         # Redukcja epsilon, aby stopniowo zmniejszać częstotliwość losowych wyborów
@@ -166,7 +174,7 @@ class LSTMTradingAgent(nn.Module):
     def best_action(self, root):
         if not root.children:
             print("Brak dzieci, sprawdź logikę ekspansji")
-            return random.choice([0, 1])  # Domyślna akcja, np. losowy wybór LONG lub SHORT
+            return random.choice([0, 1, 2])  # Domyślna akcja, np. losowy wybór LONG, SHORT lub No-Op
 
         best_child = max(root.children, key=lambda child: child.value)
         return best_child.action
@@ -233,11 +241,9 @@ class LSTMTradingAgent(nn.Module):
         states, actions, rewards, next_states, dones = zip(*batch)
 
         # Dodanie kontroli typów i rozmiarów danych
-        assert all(isinstance(s, np.ndarray) or isinstance(s, torch.Tensor) for s in
-                   states), "Błąd: Niewłaściwy typ danych w states"
+        assert all(isinstance(s, np.ndarray) or isinstance(s, torch.Tensor) for s in states), "Błąd: Niewłaściwy typ danych w states"
         assert len(states) > 0, "Błąd: Pusta lista states"
-        assert all(isinstance(ns, np.ndarray) or isinstance(ns, torch.Tensor) for ns in
-                   next_states), "Błąd: Niewłaściwy typ danych w next_states"
+        assert all(isinstance(ns, np.ndarray) or isinstance(ns, torch.Tensor) for ns in next_states), "Błąd: Niewłaściwy typ danych w next_states"
         assert len(next_states) > 0, "Błąd: Pusta lista next_states"
 
         # Logowanie danych przed konwersją
@@ -276,11 +282,12 @@ class LSTMTradingAgent(nn.Module):
         self.optimizer.step()
 
         # Update the target network weights
-        self.target_network.load_state_dict(self.online_network.state_dict())
-        self.fc_target.load_state_dict(self.fc_online.state_dict())
+        self.target_network.load_stateDict(self.online_network.state_dict())
+        self.fc_target.load_stateDict(self.fc_online.stateDict())
 
     def save_model(self, filepath):
         torch.save(self.state_dict(), filepath)
 
     def load_model(self, filepath):
         self.load_state_dict(torch.load(filepath))
+
