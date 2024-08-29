@@ -1,3 +1,5 @@
+# lstm_trading_agent.py
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -37,7 +39,6 @@ class Node:
         return child_node
 
     def simulate_action(self, action):
-        # Tutaj dodaj logikę do symulacji nowego stanu po wykonaniu akcji
         # Dla uproszczenia, użyjemy tego samego stanu, ale w praktyce powinieneś tutaj zaktualizować stan
         return self.state
 
@@ -68,16 +69,27 @@ class LSTMTradingAgent(nn.Module):
         self.target_network.load_state_dict(self.online_network.state_dict())
         self.fc_target.load_state_dict(self.fc_online.state_dict())
 
-        # Inicjalizacja atrybutu last_action
+        # Inicjalizacja atrybutu last_action i trailing stop-loss
         self.last_action = None
+        self.trailing_stop_loss = None
 
     def act(self, state):
-        self.eval()
-        with torch.no_grad():
-            state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-            action = self.monte_carlo_tree_search(state)
+        if random.random() < self.epsilon:
+            action = random.choice([0, 1])
+            print("Agent wybiera akcję losowo:", "LONG" if action == 0 else "SHORT")
+        else:
+            self.eval()
+            with torch.no_grad():
+                state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+                action = self.monte_carlo_tree_search(state_tensor)
 
-        self.train()
+                print("Agent wybiera akcję na podstawie MCTS z Q-values:", "LONG" if action == 0 else "SHORT")
+            self.train()
+
+        # Redukcja epsilon, aby stopniowo zmniejszać częstotliwość losowych wyborów
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+
         self.last_state = state
         self.last_action = action  # Ustawienie ostatniej akcji
         return action
@@ -86,7 +98,7 @@ class LSTMTradingAgent(nn.Module):
         root = Node(state)
         for _ in range(100):  # Liczba symulacji
             node = self.tree_policy(root)
-            reward, _ = self.simulate(node.state)  # Dodano zwracanie nowego stanu
+            reward, new_state = self.simulate(node.state, node.action)  # Symulacja nowego stanu i wartości Q
             self.backpropagate(node, reward)
 
         return self.best_action(root)
@@ -104,39 +116,45 @@ class LSTMTradingAgent(nn.Module):
         # Sprawdza, czy węzeł jest węzłem terminalnym
         return len(node.untried_actions) == 0
 
-    def simulate(self, state):
+    def simulate(self, state, action):
         """
-        Symulacja nowego stanu na podstawie bieżącego stanu oraz wprowadzenie losowej zmienności.
+        Symulacja nowego stanu na podstawie bieżącego stanu oraz użycie Q-values z Double Q-learning.
+        Uwzględnienie wolumenu, średnich kroczących i trailing stop-loss.
         """
-        # Rozpakowanie stanu
-        current_price = state[0, 0, 0].item()  # Zakładamy, że cena jest pierwszym elementem w stanie
-        moving_average = state[0, 0, 1].item()  # Zakładamy, że średnia krocząca jest drugim elementem
-        volume = state[0, 0, 2].item()  # Zakładamy, że wolumen jest trzecim elementem
+        current_price = state[0, 0, 0].item()
+        moving_average = state[0, 0, 1].item()
+        volume = state[0, 0, 2].item()
 
-        # Ustalanie zmienności na podstawie różnicy między ceną a średnią kroczącą
-        price_deviation = current_price - moving_average
+        # Aktualizacja trailing stop-loss
+        if action == 0:  # LONG
+            if self.trailing_stop_loss is None:
+                self.trailing_stop_loss = current_price * 0.98  # Inicjalny poziom trailing stop-loss
+            else:
+                self.trailing_stop_loss = max(self.trailing_stop_loss, current_price * 0.98)
+        elif action == 1:  # SHORT
+            if self.trailing_stop_loss is None:
+                self.trailing_stop_loss = current_price * 1.02  # Inicjalny poziom trailing stop-loss
+            else:
+                self.trailing_stop_loss = min(self.trailing_stop_loss, current_price * 1.02)
 
-        # Wprowadzenie losowej zmienności
-        volatility_factor = np.random.normal(0, 1)
+        # Ustalanie nagrody na podstawie Q-values i trailing stop-loss
+        with torch.no_grad():
+            q_values = self.fc_target(self.target_network(state)[0])
+            reward = torch.max(q_values).item()  # Użycie najwyższej wartości Q jako proxy dla nagrody
 
-        # Symulacja nowej ceny: aktualna cena plus zmiana wynikająca z trendu i losowej zmienności
-        simulated_price_change = price_deviation * 0.1 + volatility_factor * 0.02
-        simulated_price = current_price + simulated_price_change
+            # Uwzględnienie wolumenu i średnich kroczących
+            if current_price > moving_average and volume > np.mean(volume):
+                reward *= 1.1  # Preferencja dla silnych sygnałów w kierunku LONG
+            elif current_price < moving_average and volume > np.mean(volume):
+                reward *= 0.9  # Preferencja dla silnych sygnałów w kierunku SHORT
 
-        # Nagroda zależna od symulowanej zmiany ceny
-        if simulated_price > current_price:
-            reward = 1  # Zysk dla pozycji long
-        else:
-            reward = -1  # Strata dla pozycji long
+            # Uwzględnienie trailing stop-loss
+            if action == 0 and current_price < self.trailing_stop_loss:
+                reward -= 1.0  # Kara za spadek poniżej trailing stop-loss w przypadku LONG
+            elif action == 1 and current_price > self.trailing_stop_loss:
+                reward -= 1.0  # Kara za wzrost powyżej trailing stop-loss w przypadku SHORT
 
-        # Jeśli agent wybrał short, odwracamy logikę nagrody
-        if self.last_action == 1:  # 1 = short
-            reward = -reward
-
-        # Tworzymy nowy stan na podstawie symulowanych wartości
-        new_state = np.array([simulated_price, moving_average, volume])
-
-        return reward, new_state
+        return reward, state
 
     def backpropagate(self, node, reward):
         # Propagacja wsteczna wartości nagrody przez drzewo
@@ -155,18 +173,38 @@ class LSTMTradingAgent(nn.Module):
 
     def reward(self, profit_loss, holding_time, market_volatility, new_state, done):
         """
-        Dynamiczna funkcja nagrody uwzględniająca zysk/stratę, czas trzymania pozycji oraz zmienność rynku.
+        Ulepszona dynamiczna funkcja nagrody uwzględniająca zysk/stratę, czas trzymania pozycji, zmienność rynku,
+        oraz wprowadzenie nieliniowego skalowania zysków, kar za straty, oraz premiowania wysokiej skuteczności.
         """
-        reward_value = profit_loss
+        # Nieliniowe skalowanie zysków
+        if profit_loss > 0:
+            reward_value = profit_loss ** 2  # Nagroda za większe zyski (kwadratowa)
+        else:
+            reward_value = profit_loss  # Kara za straty pozostaje liniowa
 
-        # Kara za długi czas trzymania pozycji
-        if holding_time > 10:  # przykład
-            reward_value -= holding_time * 0.01
+        # Kara za długi czas trzymania pozycji, szczególnie jeśli zysk maleje
+        if holding_time > 10:
+            if profit_loss < 0:
+                reward_value -= holding_time * 0.02  # Większa kara za stratę przy długim czasie trzymania
+            else:
+                reward_value -= holding_time * 0.01  # Standardowa kara za długi czas trzymania pozycji
 
-        # Kara za zmienność rynku (większa zmienność = większe ryzyko)
-        reward_value -= market_volatility * 0.05
+        # Dynamiczne karanie lub premiowanie za zmienność rynku
+        if market_volatility > 0.05:
+            if profit_loss > 0:
+                reward_value += market_volatility * 0.1  # Nagroda za zarabianie w warunkach dużej zmienności
+            else:
+                reward_value -= market_volatility * 0.05  # Kara za stratę w warunkach dużej zmienności
 
-        # Przechowywanie nagrody w pamięci
+        # Dodatkowa premia za osiągnięcie wysokiego zysku
+        if profit_loss > 100:  # Próg zysku
+            reward_value += 50  # Dodatkowa premia za wysoką skuteczność
+
+        # Zwiększona kara za straty, aby unikać ryzykownych decyzji
+        if profit_loss < 0:
+            reward_value += profit_loss * 1.5  # Zwiększenie kary za stratę
+
+        # Przechowywanie nagrody w pamięci replay
         self.replay_memory.append((self.last_state, self.last_action, reward_value, new_state, done))
         if len(self.replay_memory) > self.memory_size:
             self.replay_memory.pop(0)
@@ -174,11 +212,17 @@ class LSTMTradingAgent(nn.Module):
         self.train_agent()
 
     def forward(self, x):
+        # Sprawdzenie, czy x jest trójwymiarowym tensorem, jakiego oczekuje LSTM
+        if len(x.shape) == 2:
+            x = x.unsqueeze(1)  # Dodanie dodatkowego wymiaru, jeśli x jest dwuwymiarowy
+
+        # Inicjalizacja stanów ukrytych i komórkowych
         h0 = torch.zeros(1, x.size(0), self.hidden_size).to(x.device)
         c0 = torch.zeros(1, x.size(0), self.hidden_size).to(x.device)
 
+        # Przekazanie danych przez LSTM
         out, _ = self.online_network(x, (h0, c0))
-        out = self.fc_online(out[:, -1, :])
+        out = self.fc_online(out[:, -1, :])  # Pobranie ostatniego wyjścia LSTM
         return out
 
     def train_agent(self):
@@ -188,21 +232,44 @@ class LSTMTradingAgent(nn.Module):
         batch = random.sample(self.replay_memory, self.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
 
-        states = torch.stack(states)
+        # Dodanie kontroli typów i rozmiarów danych
+        assert all(isinstance(s, np.ndarray) or isinstance(s, torch.Tensor) for s in
+                   states), "Błąd: Niewłaściwy typ danych w states"
+        assert len(states) > 0, "Błąd: Pusta lista states"
+        assert all(isinstance(ns, np.ndarray) or isinstance(ns, torch.Tensor) for ns in
+                   next_states), "Błąd: Niewłaściwy typ danych w next_states"
+        assert len(next_states) > 0, "Błąd: Pusta lista next_states"
+
+        # Logowanie danych przed konwersją
+        print(f"Konwertowanie states: {states}")
+        print(f"Konwertowanie next_states: {next_states}")
+        print(f"Konwertowanie actions: {actions}")
+        print(f"Konwertowanie rewards: {rewards}")
+        print(f"Konwertowanie dones: {dones}")
+
+        # Konwersja numpy arrays do Tensorów
+        states = torch.stack([torch.tensor(s, dtype=torch.float32) for s in states])
+        next_states = torch.stack([torch.tensor(ns, dtype=torch.float32) for ns in next_states])
         actions = torch.tensor(actions)
         rewards = torch.tensor(rewards, dtype=torch.float32)
-        next_states = torch.stack(next_states)
         dones = torch.tensor(dones, dtype=torch.float32)
 
         self.optimizer.zero_grad()
         q_values = self(states)
         q_target = q_values.clone().detach()
 
-        next_q_values_online = self(next_states).max(1)[0]
-        next_q_values_target = self.target_network(next_states)[0].max(1)[0]
+        # Double Q-Learning
+        with torch.no_grad():
+            # Wybór akcji z online network
+            next_q_values_online = self.fc_online(self.online_network(next_states)[0])
+            best_next_actions = torch.argmax(next_q_values_online, dim=1)
+
+            # Obliczenie wartości Q z target network dla wybranej akcji
+            next_q_values_target = self.fc_target(self.target_network(next_states)[0])
+            next_q_values_target_selected = next_q_values_target.gather(1, best_next_actions.unsqueeze(1)).squeeze(1)
 
         for i in range(len(batch)):
-            q_target[i, actions[i]] = rewards[i] + (1 - dones[i]) * next_q_values_target[i]
+            q_target[i, actions[i]] = rewards[i] + (1 - dones[i]) * next_q_values_target_selected[i]
 
         loss = self.criterion(q_values, q_target)
         loss.backward()
