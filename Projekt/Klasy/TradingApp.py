@@ -139,7 +139,7 @@ class TradingApp:
             self.current_index += 1
 
             # Uruchomienie funkcji update_chart ponownie po 1000 ms (1 minuta odpowiada 1 sekundzie)
-            self.root.after(200, self.update_chart)
+            self.root.after(1000, self.update_chart)
         else:
             model_filepath = 'agent_model.pth'
             self.agent.save_model(model_filepath)
@@ -239,8 +239,8 @@ if __name__ == "__main__":
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
     timeframe = '1h'
-    since = '2024-01-01T00:00:00Z'
-    until = '2024-06-01T00:00:00Z'
+    since = '2024-03-01T00:00:00Z'
+    until = '2024-04-01T00:00:00Z'
 
     # Pobieranie danych
     ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
