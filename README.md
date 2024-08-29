@@ -96,3 +96,70 @@ PROBLEMY DO ROZWIĄZANIA:
 
 ------------------------------------
 
+TOP WSKAŹNKI:
+
+1. RSI (Relative Strength Index)
+   
+Co mierzy: RSI mierzy siłę względną trendu poprzez porównanie wielkości wzrostów i spadków cen w określonym okresie.
+
+Interpretacja: RSI oscyluje między 0 a 100. Wartości powyżej 70 mogą wskazywać na stan wykupienia (overbought), co sugeruje możliwość korekty w dół, natomiast wartości poniżej 30 mogą oznaczać stan wyprzedania (oversold), co może sygnalizować potencjalny wzrost ceny.
+
+2. MACD (Moving Average Convergence Divergence)
+   
+Co mierzy: MACD śledzi relację między dwiema średnimi kroczącymi (zwykle 12-dniową i 26-dniową) i identyfikuje zmiany w sile, kierunku, pędzie i czasie trwania trendu.
+
+Interpretacja: Kiedy linia MACD przecina linie sygnałową od dołu, jest to zwykle sygnał kupna, a przecięcie od góry jest sygnałem sprzedaży. Różnica między MACD a linią sygnałową może również wskazywać na siłę trendu.
+
+3. Volume (Wolumen)
+   
+Co mierzy: Wolumen wskazuje na liczbę transakcji wykonanych w danym okresie czasu.
+
+Interpretacja: Wzrost wolumenu podczas trendu wzrostowego może potwierdzać siłę trendu, natomiast spadek wolumenu przy wzrostach może sugerować słabnący trend. Duży wolumen przy gwałtownej zmianie ceny często wskazuje na ważny punkt zwrotny.
+
+4. Stochastic Oscillator
+   
+Co mierzy: Stochastic Oscillator porównuje zamknięcie ceny danego okresu z zakresem cen z tego okresu.
+
+Interpretacja: Wartości powyżej 80 mogą wskazywać na stan wykupienia, a poniżej 20 na wyprzedanie. Jest szczególnie użyteczny do identyfikowania punktów zwrotnych na rynku.
+
+5. Ichimoku Cloud
+   
+Co mierzy: Ichimoku Cloud to złożony wskaźnik, który dostarcza informacji o poziomach wsparcia i oporu, kierunku trendu oraz pędzie.
+
+Interpretacja: Chmura (czyli obszar między Senkou Span A i Senkou Span B) służy jako dynamiczne wsparcie/opór. Cena powyżej chmury wskazuje na trend wzrostowy, a poniżej na trend spadkowy.
+
+6. ADX (Average Directional Index)
+   
+Co mierzy: ADX mierzy siłę trendu, niezależnie od jego kierunku.
+
+Interpretacja: Wartości ADX powyżej 25 sugerują silny trend, natomiast poniżej 20 mogą wskazywać na słaby lub brak trendu. ADX sam w sobie nie wskazuje kierunku trendu, lecz jedynie jego siłę.
+
+7. SMA (Simple Moving Average) i EMA (Exponential Moving Average)
+   
+Co mierzy: SMA i EMA są wskaźnikami średniej ceny z danego okresu. SMA jest prostą średnią arytmetyczną, a EMA przywiązuje większą wagę do nowszych cen, co czyni go bardziej czułym na ostatnie zmiany.
+
+Interpretacja: Przecięcie ceny przez SMA lub EMA może wskazywać na zmianę trendu. EMA jest często używana do identyfikacji krótkoterminowych zmian trendu, podczas gdy SMA może być bardziej użyteczna w analizie długoterminowej.
+
+8. FVG (Fair Value Gap) / Imbalance Zones
+   
+Co to jest: FVG (Fair Value Gap) lub Imbalance Zones to koncepcja, która odnosi się do sytuacji, w której rynek porusza się tak szybko w jednym kierunku, że brakuje zrównoważonej akcji cenowej. Taki ruch pozostawia "lukę" między poziomami wsparcia a oporu, gdzie nie nastąpiła wystarczająca liczba transakcji.
+
+Interpretacja: Te "luki" (zwykle widoczne na wykresach w postaci długich świec bez korekty) są często uważane za obszary, do których cena może powrócić, aby wypełnić tę lukę. Traderzy używają tych stref jako potencjalnych miejsc do otwierania pozycji, oczekując na korektę do poziomu równowagi.
+
+9. Liquidity Levels (Poziomy płynności)
+    
+Co to jest: Poziomy płynności odnoszą się do cenowych poziomów, przy których znajdują się zlecenia oczekujące w dużej ilości, np. stop lossy, take profit, zlecenia oczekujące. Te poziomy przyciągają cenę, ponieważ duża ilość zleceń może wywołać silne ruchy cenowe.
+
+Interpretacja: Traderzy często identyfikują te poziomy jako miejsca, gdzie duzi gracze na rynku mogą dążyć do "polowania" na zlecenia stop loss lub do wywołania fałszywych wybicieli, po czym cena może gwałtownie zmienić kierunek. Identyfikacja poziomów płynności pomaga traderom zrozumieć, gdzie może wystąpić silny ruch cenowy.
+
+10. Stochastic RSI
+    
+Co to jest: Stochastic RSI to wskaźnik techniczny, który łączy Stochastic Oscillator z Relative Strength Index (RSI). Jego celem jest dostarczenie bardziej czułego wskaźnika momentum, który może wychwytywać krótkoterminowe odwrócenia.
+
+Interpretacja: Stochastic RSI oscyluje między 0 a 1 (lub 0 a 100, w zależności od ustawień) i jest szczególnie użyteczny w identyfikowaniu stanów wykupienia (overbought) i wyprzedania (oversold) na rynku. Wartości powyżej 80 (lub 0.8) mogą wskazywać na wykupienie, co sugeruje możliwość korekty w dół, a wartości poniżej 20 (lub 0.2) mogą sygnalizować wyprzedanie, co może sugerować potencjalny wzrost ceny. Jest to bardziej dynamiczny wskaźnik niż tradycyjny RSI, co czyni go przydatnym w strategiach o wyższym tempie transakcji.
+
+
+TUTAJ MASZ NAJWAŻNIEJSZE WSKAŹNIKI, W NICH TRZEBA USTALAĆ JAKIEŚ ZMIENNE CZYLI ILOŚĆ DNI KTÓRE BIORĄ POD UWAGĘ, CZY BIERZE OPEN CZY CLOSE Z DNIA ITP. FAJNIE JAKBY BYŁY ONE ZMIENNE I AGENT MÓGŁ SOBIE JE SAM USTALIĆ POD WPŁYWAM TESTOWANIA, SĄ JAKIEŚ DOMYŚLNE USTAWIENIA ALE NIE ZAWSZE SĄ ONE NAJLEPSZE, SĄ PO PROSTU DOBRE WTEDY. POKOMBINUJ TROCHE Z TYM.
+
+
+
