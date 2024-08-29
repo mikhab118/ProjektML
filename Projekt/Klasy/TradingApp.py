@@ -1,13 +1,17 @@
+# trading_app.py
+
+import tkinter as tk
+
 import ccxt
 import pandas as pd
-import tkinter as tk
 from matplotlib import pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import os
-from lstm_agent import LSTMTradingAgent  # Import agenta z innego pliku
 import torch.optim as optim
-import torch.nn as nn
 import numpy as np
+from torch import nn
+
+from lstm_agent import LSTMTradingAgent  # Import agenta z innego pliku
 from data_processing import fetch_data_in_range
 
 
@@ -33,7 +37,7 @@ class TradingApp:
         self.optimizer = optim.AdamW(self.agent.parameters())
         self.criterion = nn.MSELoss()
 
-        # Interfejs użytkownika
+        # Inicjalizacja interfejsu użytkownika
         self.take_profit_label = tk.Label(root, text="TAKE PROFIT ($)")
         self.take_profit_label.pack()
         self.take_profit_entry = tk.Entry(root)
@@ -75,10 +79,9 @@ class TradingApp:
 
     def update_chart(self):
         if self.current_index < len(self.data):
-            # Pobieranie bieżącego wiersza danych
             current_data = self.data.iloc[self.current_index]
 
-            # Feature engineering: moving average and volume
+            # Feature engineering: moving average, volume
             window_size = 10
             if self.current_index >= window_size:
                 moving_average = np.mean(self.data['close'].iloc[self.current_index - window_size:self.current_index])
@@ -136,7 +139,7 @@ class TradingApp:
             self.current_index += 1
 
             # Uruchomienie funkcji update_chart ponownie po 1000 ms (1 minuta odpowiada 1 sekundzie)
-            self.root.after(1000, self.update_chart)
+            self.root.after(200, self.update_chart)
         else:
             model_filepath = 'agent_model.pth'
             self.agent.save_model(model_filepath)
@@ -162,10 +165,15 @@ class TradingApp:
     def place_order(self, direction):
         if self.position is None:
             entry_price = self.data['close'].iloc[self.current_index]
-            investment_amount = self.balance * 0.1  # 10% stanu konta
+
+            # Dynamiczna alokacja kapitału w zależności od zaufania do decyzji agenta
+            confidence_factor = 0.1  # Można to obliczyć na podstawie pewności decyzji agenta
+            investment_amount = self.balance * confidence_factor
+
             if investment_amount > self.balance:
                 print("Nie masz wystarczającej ilości środków!")
                 return
+
             if direction == "long":
                 take_profit = entry_price * 1.03
                 stop_loss = entry_price * 0.97
@@ -232,7 +240,7 @@ if __name__ == "__main__":
     symbol = 'BTC/USDT'
     timeframe = '1h'
     since = '2024-01-01T00:00:00Z'
-    until = '2024-01-11T00:00:00Z'
+    until = '2024-06-01T00:00:00Z'
 
     # Pobieranie danych
     ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
