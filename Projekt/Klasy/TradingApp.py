@@ -1,7 +1,4 @@
-# trading_app.py
-
 import tkinter as tk
-
 import ccxt
 import pandas as pd
 from matplotlib import pyplot as plt
@@ -10,23 +7,20 @@ import os
 import torch.optim as optim
 import numpy as np
 from torch import nn
-
-from lstm_agent import LSTMTradingAgent  # Import agenta z innego pliku
+from lstm_agent import LSTMTradingAgent
 from data_processing import fetch_data_in_range
-
 
 class TradingApp:
     def __init__(self, root, data):
         self.root = root
         self.root.title("BTC/USDT Trading Simulator")
 
-        self.balance = 10000  # Początkowy stan konta w dolarach
-        self.wynik = 10000  # Początkowy wynik
+        self.initial_balance = 10000
+        self.balance = self.initial_balance  # Początkowy stan konta w dolarach
         self.data = data  # Wczytane dane
         self.position = None  # Brak pozycji na starcie
-        self.agent = LSTMTradingAgent(input_size=3, hidden_size=50, output_size=2)  # Agent z 3 cechami
+        self.agent = LSTMTradingAgent(input_size=3, hidden_size=50, output_size=3)  # Agent z 3 cechami
 
-        # Jeśli istnieje plik modelu, wczytaj go
         model_filepath = 'agent_model.pth'
         if os.path.exists(model_filepath):
             self.agent.load_model(model_filepath)
@@ -37,7 +31,6 @@ class TradingApp:
         self.optimizer = optim.AdamW(self.agent.parameters())
         self.criterion = nn.MSELoss()
 
-        # Inicjalizacja interfejsu użytkownika
         self.take_profit_label = tk.Label(root, text="TAKE PROFIT ($)")
         self.take_profit_label.pack()
         self.take_profit_entry = tk.Entry(root)
@@ -62,10 +55,6 @@ class TradingApp:
         self.balance_label = tk.Label(root, text=f"STAN KONTA: ${self.balance:.2f}")
         self.balance_label.pack()
 
-        self.wynik_label = tk.Label(root, text=f"WYNIK: {self.wynik:.2f}")
-        self.wynik_label.pack()
-
-        # Wykres
         self.figure, self.ax = plt.subplots()
         self.canvas = FigureCanvasTkAgg(self.figure, master=root)
         self.canvas.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -74,6 +63,8 @@ class TradingApp:
 
     def start_simulation(self):
         self.current_index = 0
+        self.balance = self.initial_balance
+        self.ax.clear()  # Czyścimy wykres przed ponownym rozpoczęciem
         print("Rozpoczynanie symulacji...")
         self.update_chart()
 
@@ -81,12 +72,11 @@ class TradingApp:
         if self.current_index < len(self.data):
             current_data = self.data.iloc[self.current_index]
 
-            # Feature engineering: moving average, volume
             window_size = 10
             if self.current_index >= window_size:
                 moving_average = np.mean(self.data['close'].iloc[self.current_index - window_size:self.current_index])
             else:
-                moving_average = current_data['close']  # W przypadku braku wystarczającej liczby danych
+                moving_average = current_data['close']
 
             volume = current_data['volume']
 
@@ -94,7 +84,6 @@ class TradingApp:
 
             print(f"Agent analizuje cenę: {current_data['close']}")
 
-            # Dodanie punktu do wykresu
             if self.current_index > 0:
                 previous_close = self.data['close'].iloc[self.current_index - 1]
                 current_close = self.data['close'].iloc[self.current_index]
@@ -103,50 +92,35 @@ class TradingApp:
                              self.data['close'][self.current_index - 1:self.current_index + 1],
                              color=color)
 
-            # Dodanie siatki do wykresu
             self.ax.grid(True)
-
-            # Aktualizacja tytułu wykresu
             self.ax.set_title(f"BTC/USDT Trading Simulator")
             self.ax.set_xlabel("Time")
             self.ax.set_ylabel("Price")
-
-            # Rysowanie wykresu
             self.canvas.draw()
 
-            # Agent podejmuje decyzje
             self.agent_act(current_data['close'], moving_average, volume)
 
-            # Sprawdzenie, czy osiągnięto take profit lub stop loss
             if self.position:
                 if self.position['direction'] == "long":
-                    if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position[
-                        'stop_loss']:
+                    if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position['stop_loss']:
                         print("Zamykanie pozycji LONG.")
                         self.close_position(current_data['close'], moving_average, volume)
                 elif self.position['direction'] == "short":
-                    if current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position[
-                        'take_profit']:
+                    if current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position['take_profit']:
                         print("Zamykanie pozycji SHORT.")
                         self.close_position(current_data['close'], moving_average, volume)
 
-            # Odejmowanie wyniku o 1 co aktualizację wykresu
-            self.wynik -= 1
-            self.wynik_label.config(text=f"WYNIK: {self.wynik:.2f}")
-            print(f"Wynik: {self.wynik}")
-
-            # Przejście do następnej świeczki
             self.current_index += 1
-
-            # Uruchomienie funkcji update_chart ponownie po 1000 ms (1 minuta odpowiada 1 sekundzie)
-            self.root.after(1000, self.update_chart)
+            self.root.after(10, self.update_chart)
         else:
             model_filepath = 'agent_model.pth'
             self.agent.save_model(model_filepath)
-            print("Symulacja zakończona.")
+            with open("final_balance.txt", "a") as file:
+                file.write(f"{self.balance}\n")
+            print("Symulacja zakończona. Zapisano wynik.")
+            self.start_simulation()
 
     def agent_act(self, current_price, moving_average, volume):
-        print(f"Agent analizuje cenę: {current_price}")
         state = np.array([current_price, moving_average, volume])
         action = self.agent.act(state)
         if action == 0:
@@ -166,41 +140,33 @@ class TradingApp:
         if self.position is None:
             entry_price = self.data['close'].iloc[self.current_index]
 
-            # Dynamiczna alokacja kapitału w zależności od zaufania do decyzji agenta
-            confidence_factor = 0.1  # Można to obliczyć na podstawie pewności decyzji agenta
+            confidence_factor = 0.1
             investment_amount = self.balance * confidence_factor
 
             if investment_amount > self.balance:
                 print("Nie masz wystarczającej ilości środków!")
                 return
 
-            if direction == "long":
-                take_profit = entry_price * 1.03
-                stop_loss = entry_price * 0.97
-                trailing_stop_loss = entry_price * 0.98
-            elif direction == "short":
-                take_profit = entry_price * 0.97
-                stop_loss = entry_price * 1.03
-                trailing_stop_loss = entry_price * 1.02
+            confidence = 0.7  # Przykładowa wartość zaufania do decyzji agenta
+            take_profit, stop_loss = self.agent.calculate_dynamic_tp_sl(direction, entry_price, entry_price, 0.7, confidence)
 
             self.position = {
                 'direction': direction,
                 'entry_price': entry_price,
                 'take_profit': take_profit,
                 'stop_loss': stop_loss,
-                'trailing_stop_loss': trailing_stop_loss,
+                'trailing_stop_loss': entry_price * (0.98 if direction == "long" else 1.02),
                 'investment_amount': investment_amount
             }
-            self.balance -= investment_amount  # Odejmowanie kwoty inwestycji od stanu konta
+            self.balance -= investment_amount
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
-            print(
-                f"Opened {direction} position at {entry_price}. TP: {take_profit}. SL: {stop_loss}. Investment amount: {investment_amount}")
+            print(f"Opened {direction} position at {entry_price}. TP: {take_profit}. SL: {stop_loss}. Investment amount: {investment_amount}")
 
     def close_position(self, closing_price, moving_average, volume):
         if self.position:
             direction = self.position['direction']
-            initial_balance = self.balance  # Zapamiętanie stanu konta przed zamknięciem pozycji
 
+            # Oblicz procentowy zysk/stratę
             if direction == "long":
                 profit_loss = (closing_price - self.position['entry_price']) / self.position['entry_price']
             else:  # short
@@ -212,40 +178,36 @@ class TradingApp:
             elif direction == "short" and closing_price > self.position['trailing_stop_loss']:
                 self.position['stop_loss'] = closing_price
 
-            # Dodanie lub odjęcie zysku/straty
+            # Oblicz kwotę zysku/straty
             profit_loss_amount = self.position['investment_amount'] * (1 + profit_loss)
             self.balance += profit_loss_amount
-            self.wynik += profit_loss_amount - self.position['investment_amount']  # Aktualizacja wyniku
-            print(f"Closed position with profit/loss: {profit_loss * 100:.2f}% - ${profit_loss_amount:.2f}")
+
+            # Wyświetlanie informacji o zamknięciu pozycji
+            print(
+                f"Closed {direction} position with profit/loss: {profit_loss * 100:.2f}% - ${profit_loss_amount - self.position['investment_amount']:.2f}")
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
-            self.wynik_label.config(text=f"WYNIK: {self.wynik:.2f}")
-            print(f"Nowy wynik: {self.wynik}")
 
             # Dodatkowe czynniki do dynamicznej nagrody
             holding_time = 5  # Przykładowy czas trzymania, należy obliczyć realny czas na podstawie danych
-            market_volatility = np.std(
-                self.data['close'].iloc[self.current_index - 10:self.current_index])  # Przykładowa zmienność rynku
+            market_volatility = np.std(self.data['close'].iloc[self.current_index - 10:self.current_index])
 
             # Przekazanie nagrody agentowi
             new_state = np.array([closing_price, moving_average, volume])
-            done = False  # Możesz ustawić True, jeśli to kończy epizod
+            done = False
             self.agent.reward(profit_loss_amount - self.position['investment_amount'], holding_time, market_volatility,
                               new_state, done)
+
             self.position = None
 
-
 if __name__ == "__main__":
-    # Pobranie i przetworzenie danych
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
     timeframe = '1h'
-    since = '2024-03-01T00:00:00Z'
-    until = '2024-04-01T00:00:00Z'
+    since = '2023-04-01T00:00:00Z'
+    until = '2024-04-02T00:00:00Z'
 
-    # Pobieranie danych
     ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
 
-    # Konwersja do DataFrame
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
