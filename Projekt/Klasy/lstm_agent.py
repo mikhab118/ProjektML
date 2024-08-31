@@ -28,16 +28,27 @@ class DuelingDQN(nn.Module):
         )
 
     def forward(self, x):
-        h0 = torch.zeros(3, x.size(0), self.hidden_size).to(x.device)
-        c0 = torch.zeros(3, x.size(0), self.hidden_size).to(x.device)
+        # x powinien mieć wymiary (batch_size, seq_len, input_size)
 
+        # Inicjalizacja stanów ukrytych (h0, c0)
+        batch_size = x.size(0)  # Rozmiar batcha
+        seq_len = x.size(1)  # Długość sekwencji
+
+        h0 = torch.zeros(3, batch_size, self.hidden_size).to(x.device)
+        c0 = torch.zeros(3, batch_size, self.hidden_size).to(x.device)
+
+        # Przekazanie danych przez LSTM
         lstm_out, _ = self.lstm(x, (h0, c0))
-        lstm_out = lstm_out[:, -1, :]  # Użycie tylko ostatniego kroku czasowego
 
+        # Wybieramy tylko ostatnie wyjście z sekwencji (dla każdego elementu w batchu)
+        lstm_out = lstm_out[:, -1, :]  # lstm_out teraz ma wymiary (batch_size, hidden_size)
+
+        # Przekazanie przez strumień wartości i przewagi
         value = self.value_stream(lstm_out)
         advantage = self.advantage_stream(lstm_out)
 
-        q_values = value + (advantage - advantage.mean())
+        # Obliczenie Q-wartości
+        q_values = value + (advantage - advantage.mean(dim=1, keepdim=True))
         return q_values
 
 
