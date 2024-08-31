@@ -1,6 +1,10 @@
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
+
 import tkinter as tk
 import ccxt
 import pandas as pd
+import pandas_ta as ta
 from matplotlib import pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import os
@@ -19,7 +23,7 @@ class TradingApp:
         self.balance = self.initial_balance  # Początkowy stan konta w dolarach
         self.data = data  # Wczytane dane
         self.position = None  # Brak pozycji na starcie
-        self.agent = LSTMTradingAgent(input_size=3, hidden_size=50, output_size=3)  # Agent z 3 cechami
+        self.agent = LSTMTradingAgent(input_size=8, hidden_size=50, output_size=3)  # Agent z 8 cechami (więcej wskaźników)
 
         model_filepath = 'agent_model.pth'
         if os.path.exists(model_filepath):
@@ -73,14 +77,22 @@ class TradingApp:
             current_data = self.data.iloc[self.current_index]
 
             window_size = 10
-            if self.current_index >= window_size:
+            if self.current_index >= window_size and len(
+                    self.data['close'].iloc[self.current_index - window_size:self.current_index]) > 0:
                 moving_average = np.mean(self.data['close'].iloc[self.current_index - window_size:self.current_index])
             else:
                 moving_average = current_data['close']
 
             volume = current_data['volume']
 
-            state = np.array([current_data['close'], moving_average, volume])
+            # Pobierz wskaźniki techniczne
+            rsi = float(current_data['RSI'])
+            macd = float(current_data['MACD'])
+            macd_signal = float(current_data['MACD_signal'])
+            stoch_k = float(current_data['Stoch_k'])
+            stoch_d = float(current_data['Stoch_d'])
+
+            state = np.array([current_data['close'], moving_average, volume, rsi, macd, macd_signal, stoch_k, stoch_d])
 
             print(f"Agent analizuje cenę: {current_data['close']}")
 
@@ -98,7 +110,7 @@ class TradingApp:
             self.ax.set_ylabel("Price")
             self.canvas.draw()
 
-            self.agent_act(current_data['close'], moving_average, volume)
+            self.agent_act(state)
 
             if self.position:
                 if self.position['direction'] == "long":
@@ -120,8 +132,7 @@ class TradingApp:
             print("Symulacja zakończona. Zapisano wynik.")
             self.start_simulation()
 
-    def agent_act(self, current_price, moving_average, volume):
-        state = np.array([current_price, moving_average, volume])
+    def agent_act(self, state):
         action = self.agent.act(state)
         if action == 0:
             print("Agent wybrał: LONG")
@@ -203,14 +214,31 @@ if __name__ == "__main__":
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
     timeframe = '1h'
-    since = '2024-07-01T00:00:00Z'
-    until = '2024-08-02T00:00:00Z'
+    since = '2024-03-01T00:00:00Z'
+    until = '2024-02-01T00:00:00Z'
 
     ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
 
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
+    macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
+    if macd is not None:
+        df['MACD'] = macd['MACD_12_26_9'].astype(float)
+        df['MACD_signal'] = macd['MACDs_12_26_9'].astype(float)
+        df['MACD_hist'] = macd['MACDh_12_26_9'].astype(float)
+    else:
+        print("Błąd: Obliczenie MACD nie powiodło się.")
+
+    stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3)
+    df['Stoch_k'] = stoch['STOCHk_14_3_3'].astype(float)
+    df['Stoch_d'] = stoch['STOCHd_14_3_3'].astype(float)
+
+    df['RSI'] = ta.rsi(df['close'], length=14)
+    df['Volume_norm'] = df['volume'] / df['volume'].max()
+
     root = tk.Tk()
     app = TradingApp(root, df)
     root.mainloop()
+
+
