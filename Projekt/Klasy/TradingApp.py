@@ -111,7 +111,7 @@ class TradingApp:
                         self.close_position(current_data['close'], moving_average, volume)
 
             self.current_index += 1
-            self.root.after(10, self.update_chart)
+            self.root.after(100, self.update_chart)
         else:
             model_filepath = 'agent_model.pth'
             self.agent.save_model(model_filepath)
@@ -203,8 +203,8 @@ if __name__ == "__main__":
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
     timeframe = '1h'
-    since = '2023-04-01T00:00:00Z'
-    until = '2024-04-02T00:00:00Z'
+    since = '2024-07-01T00:00:00Z'
+    until = '2024-08-02T00:00:00Z'
 
     ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
 
