@@ -13,6 +13,7 @@ import numpy as np
 from torch import nn
 from lstm_agent import LSTMTradingAgent
 from data_processing import fetch_data_in_range
+import torch
 
 class TradingApp:
     def __init__(self, root, data):
@@ -131,6 +132,7 @@ class TradingApp:
                 file.write(f"{self.balance}\n")
             print("Symulacja zakończona. Zapisano wynik.")
             self.start_simulation()
+            self.initial_balance = 10000
 
     def agent_act(self, state):
         action = self.agent.act(state)
@@ -214,21 +216,19 @@ if __name__ == "__main__":
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
     timeframe = '1h'
-    since = '2024-03-01T00:00:00Z'
-    until = '2024-02-01T00:00:00Z'
+    since = '2024-01-01T00:00:00Z'
+    until = '2024-08-02T00:00:00Z'
 
     ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
 
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
+    # Obliczanie wskaźników technicznych
     macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
-    if macd is not None:
-        df['MACD'] = macd['MACD_12_26_9'].astype(float)
-        df['MACD_signal'] = macd['MACDs_12_26_9'].astype(float)
-        df['MACD_hist'] = macd['MACDh_12_26_9'].astype(float)
-    else:
-        print("Błąd: Obliczenie MACD nie powiodło się.")
+    df['MACD'] = macd['MACD_12_26_9'].astype(float)
+    df['MACD_signal'] = macd['MACDs_12_26_9'].astype(float)
+    df['MACD_hist'] = macd['MACDh_12_26_9'].astype(float)
 
     stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3)
     df['Stoch_k'] = stoch['STOCHk_14_3_3'].astype(float)
