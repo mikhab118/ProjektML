@@ -42,7 +42,7 @@ class DuelingDQN(nn.Module):
 
 
 class LSTMTradingAgent(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size=3, memory_size=1000, batch_size=256, epsilon_start=1.0,
+    def __init__(self, input_size=8, hidden_size=50, output_size=3, memory_size=1000, batch_size=256, epsilon_start=1.0,
                  epsilon_min=0.1, epsilon_decay=0.997):
         super(LSTMTradingAgent, self).__init__()
         self.hidden_size = hidden_size
@@ -66,26 +66,42 @@ class LSTMTradingAgent(nn.Module):
         self.trailing_stop_loss = None
 
     def act(self, state):
+        actions = [0, 1, 2]  # 0: LONG, 1: SHORT, 2: No-Op
+
         if random.random() < self.epsilon:
-            action = random.choice([0, 1, 2])
+            action = random.choice(actions)
             print("Agent wybiera akcję losowo:", "LONG" if action == 0 else "SHORT" if action == 1 else "No-Op")
         else:
             self.eval()
+
+            # Przekonwertuj stan na odpowiedni typ
+            state = np.array(state, dtype=np.float32)
+
+            # Oblicz wartości Q dla wszystkich akcji
             with torch.no_grad():
                 state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
                 q_values = self.online_network(state_tensor)
-                action = torch.argmax(q_values).item()
+                best_q_action = torch.argmax(q_values).item()
 
-                confidence_threshold = 0.3  # Obniżony próg ufności
-                if torch.max(q_values).item() < confidence_threshold:
-                    action = 2
+            # Symulacja wszystkich akcji
+            simulated_rewards = [self.simulate_action(state, action) for action in actions]
 
-                print("Agent wybiera akcję na podstawie Dueling DQN z Q-values:",
-                      "LONG" if action == 0 else "SHORT" if action == 1 else "No-Op")
+            # Połącz decyzje Q-learning z symulacją
+            if torch.max(q_values).item() < 0.3 or simulated_rewards[best_q_action] < 0:
+                # Jeśli Q-values są niskie lub symulacja sugeruje stratę, wybierz najlepszą akcję na podstawie symulacji
+                action = np.argmax(simulated_rewards)
+            else:
+                # W przeciwnym razie wybierz akcję na podstawie Q-learning
+                action = best_q_action
+
+            print("Agent wybiera akcję na podstawie Dueling DQN z Q-values i symulacji:",
+                  "LONG" if action == 0 else "SHORT" if action == 1 else "No-Op")
+
             self.train()
 
+        # Aktualizacja epsilon
         if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay  # Mniejsze tempo spadku epsilon
+            self.epsilon *= self.epsilon_decay
 
         self.last_state = state
         self.last_action = action
@@ -120,6 +136,54 @@ class LSTMTradingAgent(nn.Module):
             stop_loss *= 1.1
 
         return take_profit, stop_loss
+
+    def simulate_action(self, state, action):
+        # Zmienność rynku i podstawowe wskaźniki techniczne
+        price = state[0]  # Zakładając, że state[0] to aktualna cena
+        moving_average = state[1]  # Zakładamy, że state[1] to średnia krocząca
+        volume = state[2]  # Zakładamy, że state[2] to wolumen
+        rsi = state[3]  # Zakładamy, że state[3] to wskaźnik RSI
+        macd = state[4]  # Zakładamy, że state[4] to wskaźnik MACD
+
+        # Zmienność rynkowa
+        market_volatility = np.std([s[0] for s in self.replay_memory[-10:]])
+
+        # Ustal podstawową zmianę ceny na podstawie działania
+        if action == 0:  # LONG
+            price_change = price * (1 + market_volatility)
+        elif action == 1:  # SHORT
+            price_change = price * (1 - market_volatility)
+        else:  # No-Op
+            price_change = price
+
+        # Wykorzystanie wskaźników technicznych do dostosowania prognozowanej zmiany ceny
+        if rsi > 70:
+            # Rynek jest potencjalnie przekupiony, możliwy spadek
+            price_change *= 0.98 if action == 0 else 1.02
+        elif rsi < 30:
+            # Rynek jest potencjalnie wyprzedany, możliwy wzrost
+            price_change *= 1.02 if action == 0 else 0.98
+
+        if macd > 0:
+            # Pozytywny sygnał MACD, możliwy wzrost
+            price_change *= 1.01 if action == 0 else 0.99
+        elif macd < 0:
+            # Negatywny sygnał MACD, możliwy spadek
+            price_change *= 0.99 if action == 0 else 1.01
+
+        if volume > np.mean([s[2] for s in self.replay_memory[-10:]]):
+            # Wysoki wolumen, większe prawdopodobieństwo kontynuacji trendu
+            price_change *= 1.02 if action == 0 else 0.98
+
+        # Obliczenie zysku/straty na podstawie symulowanej ceny
+        if action == 0:  # LONG
+            profit_loss = (price_change - price) / price
+        elif action == 1:  # SHORT
+            profit_loss = (price - price_change) / price
+        else:  # No-Op
+            profit_loss = 0
+
+        return profit_loss
 
     def reward(self, profit_loss, holding_time, market_volatility, new_state, done):
         if profit_loss > 0:
