@@ -4,6 +4,7 @@ import torch.optim as optim
 import numpy as np
 import random
 
+
 from matplotlib import pyplot as plt
 from torchviz import make_dot
 import os
@@ -49,8 +50,8 @@ class DuelingDQN(nn.Module):
 
 
 class LSTMTradingAgent(nn.Module):
-    def __init__(self, input_size=8, hidden_size=50, output_size=3, memory_size=1000, batch_size=256, epsilon_start=1.0,
-                 epsilon_min=0.1, epsilon_decay=0.997):
+    def __init__(self, input_size=8, hidden_size=50, output_size=3, memory_size=5000, batch_size=512, epsilon_start=0.9,
+                 epsilon_min=0.05, epsilon_decay=0.995):
         super(LSTMTradingAgent, self).__init__()
         self.hidden_size = hidden_size
         self.memory_size = memory_size
@@ -66,8 +67,8 @@ class LSTMTradingAgent(nn.Module):
         self.online_network = DuelingDQN(input_size, hidden_size, output_size)
         self.target_network = DuelingDQN(input_size, hidden_size, output_size)
 
-        self.optimizer = optim.AdamW(self.parameters())
-        self.criterion = nn.MSELoss()
+        self.optimizer = optim.AdamW(self.parameters(), lr=1e-4)
+        self.criterion = nn.SmoothL1Loss()
 
         self.target_network.load_state_dict(self.online_network.state_dict())
 
@@ -93,7 +94,7 @@ class LSTMTradingAgent(nn.Module):
             simulated_rewards = [self.simulate_action(state, action) for action in actions]
 
             # Połącz decyzje Q-learning z symulacją
-            if torch.max(q_values).item() < 0.3 or simulated_rewards[best_q_action] < 0:
+            if torch.max(q_values).item() < 0.5 or simulated_rewards[best_q_action] < 0:
                 action = np.argmax(simulated_rewards)
             else:
                 action = best_q_action
@@ -109,6 +110,25 @@ class LSTMTradingAgent(nn.Module):
         self.last_state = state
         self.last_action = action
         return action
+
+    def plot_training_progress(self):
+        fig, ax1 = plt.subplots()
+
+        color = 'tab:red'
+        ax1.set_xlabel('Training Step')
+        ax1.set_ylabel('Loss', color=color)
+        ax1.plot(self.train_losses, color=color, label='Train Loss')
+        ax1.tick_params(axis='y', labelcolor=color)
+
+        ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
+        color = 'tab:blue'
+        ax2.set_ylabel('Epsilon', color=color)  # we already handled the x-label with ax1
+        ax2.plot([self.epsilon], color=color, label='Epsilon')
+        ax2.tick_params(axis='y', labelcolor=color)
+
+        fig.tight_layout()  # otherwise the right y-label is slightly clipped
+        plt.title("Training Loss and Epsilon Over Time")
+        plt.show()
 
     def calculate_dynamic_tp_sl(self, direction, current_price, moving_average, volume, agent_confidence):
         if len(self.replay_memory) < 2:
