@@ -1,9 +1,5 @@
 import warnings
-
 from torchviz import make_dot
-
-warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
-
 import tkinter as tk
 import ccxt
 import pandas as pd
@@ -18,8 +14,7 @@ from lstm_agent import LSTMTradingAgent
 from data_processing import fetch_data_in_range
 import torch
 
-print(torch.cuda.is_available())  # Powinno zwrócić True, jeśli GPU jest dostępne
-print(torch.cuda.device_count())  # Powinno zwrócić liczbę dostępnych GPU
+warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
 
 # Sprawdzenie dostępności CUDA
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -31,10 +26,10 @@ class TradingApp:
         self.root.title("BTC/USDT Trading Simulator")
 
         self.initial_balance = 10000
-        self.balance = self.initial_balance  # Początkowy stan konta w dolarach
-        self.data = data  # Wczytane dane
-        self.position = None  # Brak pozycji na starcie
-        self.agent = LSTMTradingAgent(input_size=8, hidden_size=50, output_size=3).to(device)  # Agent przeniesiony na GPU
+        self.balance = self.initial_balance
+        self.data = data
+        self.position = None
+        self.agent = LSTMTradingAgent(input_size=8, hidden_size=50, output_size=3).to(device)
 
         model_filepath = 'agent_model.pth'
         if os.path.exists(model_filepath):
@@ -42,6 +37,9 @@ class TradingApp:
             print("Model załadowany z pliku:", model_filepath)
         else:
             print("Brak modelu do załadowania, agent zaczyna naukę od zera.")
+
+        # Generowanie wizualizacji modelu zaraz po jego załadowaniu
+        self.visualize_model()
 
         self.optimizer = optim.AdamW(self.agent.parameters())
         self.criterion = nn.MSELoss()
@@ -74,29 +72,52 @@ class TradingApp:
         self.canvas = FigureCanvasTkAgg(self.figure, master=root)
         self.canvas.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
+        # Dodajemy przycisk do wyświetlania wykresu strat
+        self.plot_button = tk.Button(root, text="Pokaż wykres strat", command=self.show_training_progress)
+        self.plot_button.pack()
+
         self.start_simulation()
+
+    def visualize_model(self):
+        # Generowanie wizualizacji modelu DuelingDQN
+        sample_input = torch.rand((1, 1, 8)).to(device)  # Przykładowe dane wejściowe
+        output = self.agent.online_network(sample_input)
+
+        dot = make_dot(output, params=dict(self.agent.online_network.named_parameters()))
+
+        output_filepath = "network_visualization"
+
+        try:
+            print(f"Próbuję zapisać wizualizację modelu do pliku network_visualization.png...")
+            dot.format = 'png'
+            dot.render("network_visualization")
+            print(f"Wizualizacja modelu zapisana jako network_visualization.png")
+        except Exception as e:
+            print(f"Nie udało się zapisać wizualizacji modelu: {e}")
 
     def start_simulation(self):
         self.current_index = 0
-        self.balance = 10000
-        self.ax.clear()  # Czyścimy wykres przed ponownym rozpoczęciem
+        self.balance = self.initial_balance
+        self.ax.clear()
+        self.agent.losses = []  # Resetowanie listy strat na początku symulacji
         print("Rozpoczynanie symulacji...")
         self.update_chart()
+
+    def show_training_progress(self):
+        self.agent.plot_training_progress()
 
     def update_chart(self):
         if self.current_index < len(self.data):
             current_data = self.data.iloc[self.current_index]
 
             window_size = 10
-            if self.current_index >= window_size and len(
-                    self.data['close'].iloc[self.current_index - window_size:self.current_index]) > 0:
+            if self.current_index >= window_size:
                 moving_average = np.mean(self.data['close'].iloc[self.current_index - window_size:self.current_index])
             else:
                 moving_average = current_data['close']
 
             volume = current_data['volume']
 
-            # Pobierz wskaźniki techniczne
             rsi = float(current_data['RSI'])
             macd = float(current_data['MACD'])
             macd_signal = float(current_data['MACD_signal'])
@@ -105,7 +126,6 @@ class TradingApp:
 
             state = np.array([current_data['close'], moving_average, volume, rsi, macd, macd_signal, stoch_k, stoch_d])
 
-            # Przenoszenie danych wejściowych na GPU
             state = torch.tensor(state, dtype=torch.float32).to(device)
 
             print(f"Agent analizuje cenę: {current_data['close']}")
@@ -146,7 +166,6 @@ class TradingApp:
             print("Symulacja zakończona. Zapisano wynik.")
             self.start_simulation()
 
-
     def agent_act(self, state):
         action = self.agent.act(state)
         if action == 0:
@@ -166,14 +185,14 @@ class TradingApp:
         if self.position is None:
             entry_price = self.data['close'].iloc[self.current_index]
 
-            confidence_factor = 0.1
+            confidence_factor = 0.5
             investment_amount = self.balance * confidence_factor
 
             if investment_amount > self.balance:
                 print("Nie masz wystarczającej ilości środków!")
                 return
 
-            confidence = 0.7  # Przykładowa wartość zaufania do decyzji agenta
+            confidence = 0.7
             take_profit, stop_loss = self.agent.calculate_dynamic_tp_sl(direction, entry_price, entry_price, 0.7, confidence)
 
             self.position = {
@@ -192,32 +211,26 @@ class TradingApp:
         if self.position:
             direction = self.position['direction']
 
-            # Oblicz procentowy zysk/stratę
             if direction == "long":
                 profit_loss = (closing_price - self.position['entry_price']) / self.position['entry_price']
-            else:  # short
+            else:
                 profit_loss = (self.position['entry_price'] - closing_price) / self.position['entry_price']
 
-            # Dynamiczny stop-loss
             if direction == "long" and closing_price < self.position['trailing_stop_loss']:
                 self.position['stop_loss'] = closing_price
             elif direction == "short" and closing_price > self.position['trailing_stop_loss']:
                 self.position['stop_loss'] = closing_price
 
-            # Oblicz kwotę zysku/straty
             profit_loss_amount = self.position['investment_amount'] * (1 + profit_loss)
             self.balance += profit_loss_amount
 
-            # Wyświetlanie informacji o zamknięciu pozycji
             print(
                 f"Closed {direction} position with profit/loss: {profit_loss * 100:.2f}% - ${profit_loss_amount - self.position['investment_amount']:.2f}")
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
 
-            # Dodatkowe czynniki do dynamicznej nagrody
-            holding_time = 5  # Przykładowy czas trzymania, należy obliczyć realny czas na podstawie danych
+            holding_time = 5
             market_volatility = np.std(self.data['close'].iloc[self.current_index - 10:self.current_index])
 
-            # Przeniesienie nowego stanu na GPU
             new_state = torch.tensor([closing_price, moving_average, volume], dtype=torch.float32).to(device)
             done = False
             self.agent.reward(profit_loss_amount - self.position['investment_amount'], holding_time, market_volatility,
@@ -228,16 +241,15 @@ class TradingApp:
 if __name__ == "__main__":
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
-    timeframe = '1h'
-    since = '2024-01-01T00:00:00Z'
-    until = '2024-08-02T00:00:00Z'
+    timeframe = '30m'
+    since = '2022-04-01T00:00:00Z'
+    until = '2022-06-01T00:00:00Z'
 
     ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
 
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-    # Obliczanie wskaźników technicznych
     macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
     df['MACD'] = macd['MACD_12_26_9'].astype(float)
     df['MACD_signal'] = macd['MACDs_12_26_9'].astype(float)
@@ -253,25 +265,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = TradingApp(root, df)
     root.mainloop()
-
-    # Załóżmy, że masz już zainicjowany model agenta
-    agent = LSTMTradingAgent(input_size=8).to(device)
-
-    # Przykładowe dane wejściowe
-    sample_input = torch.rand((1, 1, 8)).to(device)
-
-    # Przepuść próbkę przez model
-    output = agent(sample_input)
-
-    # Wygeneruj wizualizację
-    dot = make_dot(output, params=dict(agent.named_parameters()))
-
-    output_filepath = "model_architecture"
-
-    try:
-        print(f"Próbuję zapisać wizualizację modelu do pliku {output_filepath}.png...")
-        dot.format = 'png'
-        dot.render("C:/Users/mikha/Desktop/model_architecture", format="png")
-        print(f"Wizualizacja modelu zapisana jako {output_filepath}.png")
-    except Exception as e:
-        print(f"Nie udało się zapisać wizualizacji modelu: {e}")
