@@ -103,6 +103,9 @@ class TradingApp:
         print("Rozpoczynanie symulacji...")
         self.update_chart()
 
+        # Dodaj to po zakończeniu symulacji
+        self.agent.plot_training_progress()  # Pokaż wykres postępu treningu
+
     def show_training_progress(self):
         self.agent.plot_training_progress()
 
@@ -241,7 +244,7 @@ class TradingApp:
 if __name__ == "__main__":
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
-    timeframe = '30m'
+    timeframe = '1h'
     since = '2022-04-01T00:00:00Z'
     until = '2022-06-01T00:00:00Z'
 
