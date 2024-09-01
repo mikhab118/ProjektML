@@ -1,4 +1,7 @@
 import warnings
+
+from torchviz import make_dot
+
 warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
 
 import tkinter as tk
@@ -15,6 +18,13 @@ from lstm_agent import LSTMTradingAgent
 from data_processing import fetch_data_in_range
 import torch
 
+print(torch.cuda.is_available())  # Powinno zwrócić True, jeśli GPU jest dostępne
+print(torch.cuda.device_count())  # Powinno zwrócić liczbę dostępnych GPU
+
+# Sprawdzenie dostępności CUDA
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
 class TradingApp:
     def __init__(self, root, data):
         self.root = root
@@ -24,7 +34,7 @@ class TradingApp:
         self.balance = self.initial_balance  # Początkowy stan konta w dolarach
         self.data = data  # Wczytane dane
         self.position = None  # Brak pozycji na starcie
-        self.agent = LSTMTradingAgent(input_size=8, hidden_size=50, output_size=3)  # Agent z 8 cechami (więcej wskaźników)
+        self.agent = LSTMTradingAgent(input_size=8, hidden_size=50, output_size=3).to(device)  # Agent przeniesiony na GPU
 
         model_filepath = 'agent_model.pth'
         if os.path.exists(model_filepath):
@@ -68,7 +78,7 @@ class TradingApp:
 
     def start_simulation(self):
         self.current_index = 0
-        self.balance = self.initial_balance
+        self.balance = 10000
         self.ax.clear()  # Czyścimy wykres przed ponownym rozpoczęciem
         print("Rozpoczynanie symulacji...")
         self.update_chart()
@@ -94,6 +104,9 @@ class TradingApp:
             stoch_d = float(current_data['Stoch_d'])
 
             state = np.array([current_data['close'], moving_average, volume, rsi, macd, macd_signal, stoch_k, stoch_d])
+
+            # Przenoszenie danych wejściowych na GPU
+            state = torch.tensor(state, dtype=torch.float32).to(device)
 
             print(f"Agent analizuje cenę: {current_data['close']}")
 
@@ -132,7 +145,7 @@ class TradingApp:
                 file.write(f"{self.balance}\n")
             print("Symulacja zakończona. Zapisano wynik.")
             self.start_simulation()
-            self.initial_balance = 10000
+
 
     def agent_act(self, state):
         action = self.agent.act(state)
@@ -204,8 +217,8 @@ class TradingApp:
             holding_time = 5  # Przykładowy czas trzymania, należy obliczyć realny czas na podstawie danych
             market_volatility = np.std(self.data['close'].iloc[self.current_index - 10:self.current_index])
 
-            # Przekazanie nagrody agentowi
-            new_state = np.array([closing_price, moving_average, volume])
+            # Przeniesienie nowego stanu na GPU
+            new_state = torch.tensor([closing_price, moving_average, volume], dtype=torch.float32).to(device)
             done = False
             self.agent.reward(profit_loss_amount - self.position['investment_amount'], holding_time, market_volatility,
                               new_state, done)
@@ -241,4 +254,24 @@ if __name__ == "__main__":
     app = TradingApp(root, df)
     root.mainloop()
 
+    # Załóżmy, że masz już zainicjowany model agenta
+    agent = LSTMTradingAgent(input_size=8).to(device)
 
+    # Przykładowe dane wejściowe
+    sample_input = torch.rand((1, 1, 8)).to(device)
+
+    # Przepuść próbkę przez model
+    output = agent(sample_input)
+
+    # Wygeneruj wizualizację
+    dot = make_dot(output, params=dict(agent.named_parameters()))
+
+    output_filepath = "model_architecture"
+
+    try:
+        print(f"Próbuję zapisać wizualizację modelu do pliku {output_filepath}.png...")
+        dot.format = 'png'
+        dot.render("C:/Users/mikha/Desktop/model_architecture", format="png")
+        print(f"Wizualizacja modelu zapisana jako {output_filepath}.png")
+    except Exception as e:
+        print(f"Nie udało się zapisać wizualizacji modelu: {e}")
