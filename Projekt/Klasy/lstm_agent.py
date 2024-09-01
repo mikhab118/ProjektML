@@ -3,7 +3,10 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import random
+from torchviz import make_dot
+import os
 
+print("Current working directory:", os.getcwd())
 
 class DuelingDQN(nn.Module):
     def __init__(self, input_size, hidden_size, output_size):
@@ -29,25 +32,16 @@ class DuelingDQN(nn.Module):
 
     def forward(self, x):
         # x powinien mieć wymiary (batch_size, seq_len, input_size)
-
-        # Inicjalizacja stanów ukrytych (h0, c0)
-        batch_size = x.size(0)  # Rozmiar batcha
-        seq_len = x.size(1)  # Długość sekwencji
-
+        batch_size = x.size(0)
         h0 = torch.zeros(3, batch_size, self.hidden_size).to(x.device)
         c0 = torch.zeros(3, batch_size, self.hidden_size).to(x.device)
 
-        # Przekazanie danych przez LSTM
         lstm_out, _ = self.lstm(x, (h0, c0))
+        lstm_out = lstm_out[:, -1, :]
 
-        # Wybieramy tylko ostatnie wyjście z sekwencji (dla każdego elementu w batchu)
-        lstm_out = lstm_out[:, -1, :]  # lstm_out teraz ma wymiary (batch_size, hidden_size)
-
-        # Przekazanie przez strumień wartości i przewagi
         value = self.value_stream(lstm_out)
         advantage = self.advantage_stream(lstm_out)
 
-        # Obliczenie Q-wartości
         q_values = value + (advantage - advantage.mean(dim=1, keepdim=True))
         return q_values
 
@@ -73,9 +67,6 @@ class LSTMTradingAgent(nn.Module):
 
         self.target_network.load_state_dict(self.online_network.state_dict())
 
-        self.last_action = None
-        self.trailing_stop_loss = None
-
     def act(self, state):
         actions = [0, 1, 2]  # 0: LONG, 1: SHORT, 2: No-Op
 
@@ -85,12 +76,12 @@ class LSTMTradingAgent(nn.Module):
         else:
             self.eval()
 
-            # Przekonwertuj stan na odpowiedni typ
-            state = np.array(state, dtype=np.float32)
+            # Kopiowanie tensora i przeniesienie go na GPU
+            state_tensor = state.clone().detach().unsqueeze(0).unsqueeze(0).to(
+                next(self.online_network.parameters()).device)
 
             # Oblicz wartości Q dla wszystkich akcji
             with torch.no_grad():
-                state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
                 q_values = self.online_network(state_tensor)
                 best_q_action = torch.argmax(q_values).item()
 
@@ -99,10 +90,8 @@ class LSTMTradingAgent(nn.Module):
 
             # Połącz decyzje Q-learning z symulacją
             if torch.max(q_values).item() < 0.3 or simulated_rewards[best_q_action] < 0:
-                # Jeśli Q-values są niskie lub symulacja sugeruje stratę, wybierz najlepszą akcję na podstawie symulacji
                 action = np.argmax(simulated_rewards)
             else:
-                # W przeciwnym razie wybierz akcję na podstawie Q-learning
                 action = best_q_action
 
             print("Agent wybiera akcję na podstawie Dueling DQN z Q-values i symulacji:",
@@ -110,7 +99,6 @@ class LSTMTradingAgent(nn.Module):
 
             self.train()
 
-        # Aktualizacja epsilon
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
@@ -123,8 +111,8 @@ class LSTMTradingAgent(nn.Module):
             print("Za mało danych w replay_memory do obliczenia zmienności.")
             return current_price * 1.03, current_price * 0.97  # Ustawienie domyślnych wartości
 
-        recent_closes = self.replay_memory[-10:]
-        market_volatility = np.std([state[0] for state, _, _, _, _ in recent_closes])
+        recent_closes = [state[0].cpu().numpy() for state, _, _, _, _ in self.replay_memory[-10:]]
+        market_volatility = np.std(recent_closes)
 
         if np.isnan(market_volatility) or market_volatility == 0:
             print("Nieprawidłowe obliczenie zmienności, ustawienie domyślnych wartości.")
@@ -150,14 +138,18 @@ class LSTMTradingAgent(nn.Module):
 
     def simulate_action(self, state, action):
         # Zmienność rynku i podstawowe wskaźniki techniczne
-        price = state[0]  # Zakładając, że state[0] to aktualna cena
-        moving_average = state[1]  # Zakładamy, że state[1] to średnia krocząca
-        volume = state[2]  # Zakładamy, że state[2] to wolumen
-        rsi = state[3]  # Zakładamy, że state[3] to wskaźnik RSI
-        macd = state[4]  # Zakładamy, że state[4] to wskaźnik MACD
+        price = state[0].item()  # Konwersja tensora do pojedynczej wartości
+        moving_average = state[1].item()
+        volume = state[2].item()
+        rsi = state[3].item()
+        macd = state[4].item()
 
         # Zmienność rynkowa
-        market_volatility = np.std([s[0] for s in self.replay_memory[-10:]])
+        if len(self.replay_memory) >= 2:
+            market_volatility = np.std(
+                [s[0].cpu().numpy() if isinstance(s[0], torch.Tensor) else s[0] for s in self.replay_memory[-10:]])
+        else:
+            market_volatility = 0  # lub jakaś domyślna wartość
 
         # Ustal podstawową zmianę ceny na podstawie działania
         if action == 0:  # LONG
@@ -169,21 +161,17 @@ class LSTMTradingAgent(nn.Module):
 
         # Wykorzystanie wskaźników technicznych do dostosowania prognozowanej zmiany ceny
         if rsi > 70:
-            # Rynek jest potencjalnie przekupiony, możliwy spadek
             price_change *= 0.98 if action == 0 else 1.02
         elif rsi < 30:
-            # Rynek jest potencjalnie wyprzedany, możliwy wzrost
             price_change *= 1.02 if action == 0 else 0.98
 
         if macd > 0:
-            # Pozytywny sygnał MACD, możliwy wzrost
             price_change *= 1.01 if action == 0 else 0.99
         elif macd < 0:
-            # Negatywny sygnał MACD, możliwy spadek
             price_change *= 0.99 if action == 0 else 1.01
 
-        if volume > np.mean([s[2] for s in self.replay_memory[-10:]]):
-            # Wysoki wolumen, większe prawdopodobieństwo kontynuacji trendu
+        if volume > np.mean(
+                [s[2].cpu().numpy() if isinstance(s[2], torch.Tensor) else s[2] for s in self.replay_memory[-10:]]):
             price_change *= 1.02 if action == 0 else 0.98
 
         # Obliczenie zysku/straty na podstawie symulowanej ceny
@@ -257,6 +245,15 @@ class LSTMTradingAgent(nn.Module):
         self.optimizer.step()
 
         self.target_network.load_state_dict(self.online_network.state_dict())
+
+    def visualize_model(self, input_size):
+        from torchviz import make_dot
+
+        dummy_input = torch.randn(1, 1, input_size).to(next(self.online_network.parameters()).device)
+        model_output = self.online_network(dummy_input)
+        graph = make_dot(model_output, params=dict(self.online_network.named_parameters()))
+        graph.render("network_visualization", format="png")
+        print("Wizualizacja modelu zapisana jako 'network_visualization.png'")
 
     def save_model(self, filepath):
         torch.save(self.state_dict(), filepath)
