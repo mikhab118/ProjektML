@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import random
+
+from matplotlib import pyplot as plt
 from torchviz import make_dot
 import os
 
@@ -57,6 +59,8 @@ class LSTMTradingAgent(nn.Module):
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
         self.replay_memory = []
+
+        self.train_losses = []  # Lista do przechowywania strat podczas treningu
 
         # Dueling DQN: online network & target network
         self.online_network = DuelingDQN(input_size, hidden_size, output_size)
@@ -244,7 +248,18 @@ class LSTMTradingAgent(nn.Module):
         loss.backward()
         self.optimizer.step()
 
+        # Zapisanie strat
+        self.losses.append(loss.item())
+
         self.target_network.load_state_dict(self.online_network.state_dict())
+
+    def plot_training_progress(self):
+        plt.plot(self.train_losses, label="Train Loss")
+        plt.xlabel("Training Step")
+        plt.ylabel("Loss")
+        plt.legend()
+        plt.title("Training Loss Over Time")
+        plt.show()
 
     def visualize_model(self, input_size):
         from torchviz import make_dot
