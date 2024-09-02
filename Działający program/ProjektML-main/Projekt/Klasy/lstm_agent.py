@@ -111,6 +111,7 @@ class LSTMTradingAgent(nn.Module):
         return action
 
     def calculate_dynamic_tp_sl(self, direction, current_price, moving_average, volume, agent_confidence):
+        global take_profit, stop_loss
         if len(self.replay_memory) < 2:
             print("Za mało danych w replay_memory do obliczenia zmienności.")
             return current_price * 1.03, current_price * 0.97  # Ustawienie domyślnych wartości
