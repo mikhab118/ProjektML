@@ -1,278 +1,312 @@
-import torch
-import torch.nn as nn
+import warnings
+from torchviz import make_dot
+import tkinter as tk
+import ccxt
+import pandas as pd
+import pandas_ta as ta
+from matplotlib import pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import os
 import torch.optim as optim
 import numpy as np
-import random
+from torch import nn
+from lstm_agent import LSTMTradingAgent
+from data_processing import fetch_data_in_range
+import torch
+import datetime
 
-from matplotlib import pyplot as plt
-from torchviz import make_dot
-import os
+warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
 
-print("Current working directory:", os.getcwd())
-
-class DuelingDQN(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
-        super(DuelingDQN, self).__init__()
-        self.hidden_size = hidden_size
-
-        # Wspólna warstwa LSTM
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers=3, batch_first=True)
-
-        # Strumień wartości stanu (Value Stream)
-        self.value_stream = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_size // 2, 1)
-        )
-
-        # Strumień przewagi akcji (Advantage Stream)
-        self.advantage_stream = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_size // 2, output_size)
-        )
-
-    def forward(self, x):
-        # x powinien mieć wymiary (batch_size, seq_len, input_size)
-        batch_size = x.size(0)
-        h0 = torch.zeros(3, batch_size, self.hidden_size).to(x.device)
-        c0 = torch.zeros(3, batch_size, self.hidden_size).to(x.device)
-
-        lstm_out, _ = self.lstm(x, (h0, c0))
-        lstm_out = lstm_out[:, -1, :]
-
-        value = self.value_stream(lstm_out)
-        advantage = self.advantage_stream(lstm_out)
-
-        q_values = value + (advantage - advantage.mean(dim=1, keepdim=True))
-        return q_values
+# Sprawdzenie dostępności CUDA
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 
 
-class LSTMTradingAgent(nn.Module):
-    def __init__(self, input_size=8, hidden_size=50, output_size=3, memory_size=1000, batch_size=1024, epsilon_start=1.0,
-                 epsilon_min=0.1, epsilon_decay=0.997):
-        super(LSTMTradingAgent, self).__init__()
-        self.hidden_size = hidden_size
-        self.memory_size = memory_size
-        self.batch_size = batch_size
-        self.epsilon = epsilon_start
-        self.epsilon_min = epsilon_min
-        self.epsilon_decay = epsilon_decay
-        self.replay_memory = []
+class TradingApp:
+    def __init__(self, root, data, start_date, end_date):
+        self.root = root
+        self.root.title("BTC/USDT Trading Simulator")
 
-        self.train_losses = []  # Lista do przechowywania strat podczas treningu
+        self.initial_balance = 10000
+        self.balance = self.initial_balance
+        self.data = data
+        self.position = None
+        self.agent = LSTMTradingAgent(input_size=8, hidden_size=50, output_size=3).to(device)
 
-        # Dueling DQN: online network & target network
-        self.online_network = DuelingDQN(input_size, hidden_size, output_size)
-        self.target_network = DuelingDQN(input_size, hidden_size, output_size)
+        self.start_date = start_date
+        self.end_date = end_date
 
-        self.optimizer = optim.AdamW(self.parameters())
+        model_filepath = 'agent_model.pth'
+        if os.path.exists(model_filepath):
+            self.agent.load_model(model_filepath)
+            print("Model załadowany z pliku:", model_filepath)
+        else:
+            print("Brak modelu do załadowania, agent zaczyna naukę od zera.")
+
+        # Generowanie wizualizacji modelu zaraz po jego załadowaniu
+        self.visualize_model()
+
+        self.optimizer = optim.AdamW(self.agent.parameters())
         self.criterion = nn.MSELoss()
 
-        self.target_network.load_state_dict(self.online_network.state_dict())
+        self.take_profit_label = tk.Label(root, text="TAKE PROFIT ($)")
+        self.take_profit_label.pack()
+        self.take_profit_entry = tk.Entry(root)
+        self.take_profit_entry.pack()
 
-    def act(self, state):
-        actions = [0, 1, 2]  # 0: LONG, 1: SHORT, 2: No-Op
+        self.stop_loss_label = tk.Label(root, text="STOP LOSS ($)")
+        self.stop_loss_label.pack()
+        self.stop_loss_entry = tk.Entry(root)
+        self.stop_loss_entry.pack()
 
-        if random.random() < self.epsilon:
-            action = random.choice(actions)
-            print("Agent wybiera akcję losowo:", "LONG" if action == 0 else "SHORT" if action == 1 else "No-Op")
-        else:
-            self.eval()
+        self.amount_label = tk.Label(root, text="Kwota inwestycji ($)")
+        self.amount_label.pack()
+        self.amount_entry = tk.Entry(root)
+        self.amount_entry.pack()
 
-            # Kopiowanie tensora i przeniesienie go na GPU
-            state_tensor = state.clone().detach().unsqueeze(0).unsqueeze(0).to(
-                next(self.online_network.parameters()).device)
+        self.long_button = tk.Button(root, text="LONG", bg='green', fg='white', command=self.long_position)
+        self.long_button.pack()
 
-            # Oblicz wartości Q dla wszystkich akcji
-            with torch.no_grad():
-                q_values = self.online_network(state_tensor)
-                best_q_action = torch.argmax(q_values).item()
+        self.short_button = tk.Button(root, text="SHORT", bg='red', fg='white', command=self.short_position)
+        self.short_button.pack()
 
-            # Symulacja wszystkich akcji
-            simulated_rewards = [self.simulate_action(state, action) for action in actions]
+        self.balance_label = tk.Label(root, text=f"STAN KONTA: ${self.balance:.2f}")
+        self.balance_label.pack()
 
-            # Połącz decyzje Q-learning z symulacją
-            if torch.max(q_values).item() < 0.3 or simulated_rewards[best_q_action] < 0:
-                action = np.argmax(simulated_rewards)
+        self.figure, self.ax = plt.subplots()
+        self.canvas = FigureCanvasTkAgg(self.figure, master=root)
+        self.canvas.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Dodajemy przycisk do wyświetlania wykresu strat
+        self.plot_button = tk.Button(root, text="Pokaż wykres strat", command=self.show_training_progress)
+        self.plot_button.pack()
+
+        self.start_simulation()
+
+    def visualize_model(self):
+        # Generowanie wizualizacji modelu DuelingDQN
+        sample_input = torch.rand((1, 1, 8)).to(device)  # Przykładowe dane wejściowe
+        output = self.agent.online_network(sample_input)
+
+        dot = make_dot(output, params=dict(self.agent.online_network.named_parameters()))
+
+        output_filepath = "network_visualization"
+
+        try:
+            print(f"Próbuję zapisać wizualizację modelu do pliku network_visualization.png...")
+            dot.format = 'png'
+            dot.render("network_visualization")
+            print(f"Wizualizacja modelu zapisana jako network_visualization.png")
+        except Exception as e:
+            print(f"Nie udało się zapisać wizualizacji modelu: {e}")
+
+    def start_simulation(self):
+        self.current_index = 0
+        self.balance = self.initial_balance
+        self.ax.clear()
+        self.agent.losses = []  # Resetowanie listy strat na początku symulacji
+        print("Rozpoczynanie symulacji...")
+
+        # Zaktualizowanie zakresu dat na następny miesiąc
+        self.start_date += datetime.timedelta(days=30)
+        self.end_date += datetime.timedelta(days=30)
+
+        # Pobieranie nowych danych na podstawie zaktualizowanych dat
+        self.data = self.fetch_new_data(self.start_date, self.end_date)
+
+        self.update_chart()
+
+    def fetch_new_data(self, start_date, end_date):
+        exchange = ccxt.binance()
+        symbol = 'BTC/USDT'
+        timeframe = '1h'
+
+        since = start_date.isoformat()
+        until = end_date.isoformat()
+
+        ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
+
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+        macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
+        df['MACD'] = macd['MACD_12_26_9'].astype(float)
+        df['MACD_signal'] = macd['MACDs_12_26_9'].astype(float)
+        df['MACD_hist'] = macd['MACDh_12_26_9'].astype(float)
+
+        stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3)
+        df['Stoch_k'] = stoch['STOCHk_14_3_3'].astype(float)
+        df['Stoch_d'] = stoch['STOCHd_14_3_3'].astype(float)
+
+        df['RSI'] = ta.rsi(df['close'], length=14)
+        df['Volume_norm'] = df['volume'] / df['volume'].max()
+
+        return df
+
+    def show_training_progress(self):
+        self.agent.plot_training_progress()
+
+    def update_chart(self):
+        if self.current_index < len(self.data):
+            current_data = self.data.iloc[self.current_index]
+
+            window_size = 10
+            if self.current_index >= window_size:
+                moving_average = np.mean(self.data['close'].iloc[self.current_index - window_size:self.current_index])
             else:
-                action = best_q_action
+                moving_average = current_data['close']
 
-            print("Agent wybiera akcję na podstawie Dueling DQN z Q-values i symulacji:",
-                  "LONG" if action == 0 else "SHORT" if action == 1 else "No-Op")
+            volume = current_data['volume']
 
-            self.train()
+            rsi = float(current_data['RSI'])
+            macd = float(current_data['MACD'])
+            macd_signal = float(current_data['MACD_signal'])
+            stoch_k = float(current_data['Stoch_k'])
+            stoch_d = float(current_data['Stoch_d'])
 
-        if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+            state = np.array([current_data['close'], moving_average, volume, rsi, macd, macd_signal, stoch_k, stoch_d])
 
-        self.last_state = state
-        self.last_action = action
-        return action
+            state = torch.tensor(state, dtype=torch.float32).to(device)
 
-    def calculate_dynamic_tp_sl(self, direction, current_price, moving_average, volume, agent_confidence):
-        global take_profit, stop_loss
-        if len(self.replay_memory) < 2:
-            print("Za mało danych w replay_memory do obliczenia zmienności.")
-            return current_price * 1.03, current_price * 0.97  # Ustawienie domyślnych wartości
+            print(f"Agent analizuje cenę: {current_data['close']}")
 
-        recent_closes = [state[0].cpu().numpy() for state, _, _, _, _ in self.replay_memory[-10:]]
-        market_volatility = np.std(recent_closes)
+            if self.current_index > 0:
+                previous_close = self.data['close'].iloc[self.current_index - 1]
+                current_close = self.data['close'].iloc[self.current_index]
+                color = 'green' if current_close >= previous_close else 'red'
+                self.ax.plot(self.data['timestamp'][self.current_index - 1:self.current_index + 1],
+                             self.data['close'][self.current_index - 1:self.current_index + 1],
+                             color=color)
 
-        if np.isnan(market_volatility) or market_volatility == 0:
-            print("Nieprawidłowe obliczenie zmienności, ustawienie domyślnych wartości.")
-            return current_price * 1.03, current_price * 0.97
+            self.ax.grid(True)
+            self.ax.set_title(f"BTC/USDT Trading Simulator")
+            self.ax.set_xlabel("Time")
+            self.ax.set_ylabel("Price")
+            self.canvas.draw()
 
-        base_tp_sl_distance = market_volatility * agent_confidence
+            self.agent_act(state)
 
-        if direction == "long":
-            take_profit = current_price + base_tp_sl_distance
-            stop_loss = current_price - base_tp_sl_distance
-        elif direction == "short":
-            take_profit = current_price - base_tp_sl_distance
-            stop_loss = current_price + base_tp_sl_distance
+            if self.position:
+                if self.position['direction'] == "long":
+                    if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position[
+                        'stop_loss']:
+                        print("Zamykanie pozycji LONG.")
+                        self.close_position(current_data['close'], moving_average, volume)
+                elif self.position['direction'] == "short":
+                    if current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position[
+                        'take_profit']:
+                        print("Zamykanie pozycji SHORT.")
+                        self.close_position(current_data['close'], moving_average, volume)
 
-        if current_price > moving_average:
-            take_profit *= 1.1
-            stop_loss *= 0.9
-        elif current_price < moving_average:
-            take_profit *= 0.9
-            stop_loss *= 1.1
-
-        return take_profit, stop_loss
-
-    def simulate_action(self, state, action):
-        # Zmienność rynku i podstawowe wskaźniki techniczne
-        price = state[0].item()  # Konwersja tensora do pojedynczej wartości
-        moving_average = state[1].item()
-        volume = state[2].item()
-        rsi = state[3].item()
-        macd = state[4].item()
-
-        # Zmienność rynkowa
-        if len(self.replay_memory) >= 2:
-            market_volatility = np.std(
-                [s[0].cpu().numpy() if isinstance(s[0], torch.Tensor) else s[0] for s in self.replay_memory[-10:]])
+            self.current_index += 1
+            self.root.after(100, self.update_chart)
         else:
-            market_volatility = 0  # lub jakaś domyślna wartość
+            model_filepath = 'agent_model.pth'
+            self.agent.save_model(model_filepath)
+            with open("final_balance.txt", "a") as file:
+                file.write(f"{self.balance}\n")
+            print("Symulacja zakończona. Zapisano wynik.")
+            self.start_simulation()
 
-        # Ustal podstawową zmianę ceny na podstawie działania
-        if action == 0:  # LONG
-            price_change = price * (1 + market_volatility)
-        elif action == 1:  # SHORT
-            price_change = price * (1 - market_volatility)
-        else:  # No-Op
-            price_change = price
+    def agent_act(self, state):
+        action = self.agent.act(state)
+        if action == 0:
+            print("Agent wybrał: LONG")
+            self.long_position()
+        elif action == 1:
+            print("Agent wybrał: SHORT")
+            self.short_position()
 
-        # Wykorzystanie wskaźników technicznych do dostosowania prognozowanej zmiany ceny
-        if rsi > 70:
-            price_change *= 0.98 if action == 0 else 1.02
-        elif rsi < 30:
-            price_change *= 1.02 if action == 0 else 0.98
+    def long_position(self):
+        self.place_order("long")
 
-        if macd > 0:
-            price_change *= 1.01 if action == 0 else 0.99
-        elif macd < 0:
-            price_change *= 0.99 if action == 0 else 1.01
+    def short_position(self):
+        self.place_order("short")
 
-        if volume > np.mean(
-                [s[2].cpu().numpy() if isinstance(s[2], torch.Tensor) else s[2] for s in self.replay_memory[-10:]]):
-            price_change *= 1.02 if action == 0 else 0.98
+    def place_order(self, direction):
+        if self.position is None:
+            entry_price = self.data['close'].iloc[self.current_index]
 
-        # Obliczenie zysku/straty na podstawie symulowanej ceny
-        if action == 0:  # LONG
-            profit_loss = (price_change - price) / price
-        elif action == 1:  # SHORT
-            profit_loss = (price - price_change) / price
-        else:  # No-Op
-            profit_loss = 0
+            confidence_factor = 0.5
+            investment_amount = self.balance * confidence_factor
 
-        return profit_loss
+            if investment_amount > self.balance:
+                print("Nie masz wystarczającej ilości środków!")
+                return
 
-    def reward(self, profit_loss, holding_time, market_volatility, new_state, done):
-        if profit_loss > 0:
-            reward_value = profit_loss ** 2
-        else:
-            reward_value = profit_loss
+            confidence = 0.7
+            take_profit, stop_loss = self.agent.calculate_dynamic_tp_sl(direction, entry_price, entry_price, 0.7,
+                                                                        confidence)
 
-        if holding_time > 10:
-            if profit_loss < 0:
-                reward_value -= holding_time * 0.02
+            self.position = {
+                'direction': direction,
+                'entry_price': entry_price,
+                'take_profit': take_profit,
+                'stop_loss': stop_loss,
+                'trailing_stop_loss': entry_price * (0.98 if direction == "long" else 1.02),
+                'investment_amount': investment_amount
+            }
+            self.balance -= investment_amount
+            self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
+            print(
+                f"Opened {direction} position at {entry_price}. TP: {take_profit}. SL: {stop_loss}. Investment amount: {investment_amount}")
+
+    def close_position(self, closing_price, moving_average, volume):
+        if self.position:
+            direction = self.position['direction']
+
+            if direction == "long":
+                profit_loss = (closing_price - self.position['entry_price']) / self.position['entry_price']
             else:
-                reward_value -= holding_time * 0.01
+                profit_loss = (self.position['entry_price'] - closing_price) / self.position['entry_price']
 
-        if market_volatility > 0.05:
-            if profit_loss > 0:
-                reward_value += market_volatility * 0.1
-            else:
-                reward_value -= market_volatility * 0.05
+            if direction == "long" and closing_price < self.position['trailing_stop_loss']:
+                self.position['stop_loss'] = closing_price
+            elif direction == "short" and closing_price > self.position['trailing_stop_loss']:
+                self.position['stop_loss'] = closing_price
 
-        if profit_loss > 100:
-            reward_value += 50
+            profit_loss_amount = self.position['investment_amount'] * (1 + profit_loss)
+            self.balance += profit_loss_amount
 
-        if profit_loss < 0:
-            reward_value += profit_loss * 1.5
+            print(
+                f"Closed {direction} position with profit/loss: {profit_loss * 100:.2f}% - ${profit_loss_amount - self.position['investment_amount']:.2f}")
+            self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
 
-        self.replay_memory.append((self.last_state, self.last_action, reward_value, new_state, done))
-        if len(self.replay_memory) > self.memory_size:
-            self.replay_memory.pop(0)
+            holding_time = 5
+            market_volatility = np.std(self.data['close'].iloc[self.current_index - 10:self.current_index])
 
-        self.train_agent()
+            new_state = torch.tensor([closing_price, moving_average, volume], dtype=torch.float32).to(device)
+            done = False
+            self.agent.reward(profit_loss_amount - self.position['investment_amount'], holding_time, market_volatility,
+                              new_state, done)
 
-    def train_agent(self):
-        if len(self.replay_memory) < self.batch_size:
-            return
+            self.position = None
 
-        batch = random.sample(self.replay_memory, self.batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
 
-        states = torch.stack([torch.tensor(s, dtype=torch.float32) for s in states])
-        next_states = torch.stack([torch.tensor(ns, dtype=torch.float32) for ns in next_states])
-        actions = torch.tensor(actions)
-        rewards = torch.tensor(rewards, dtype=torch.float32)
-        dones = torch.tensor(dones, dtype=torch.float32)
+if __name__ == "__main__":
+    start_date = datetime.datetime(2021, 1, 1)
+    end_date = datetime.datetime(2021, 2, 1)
 
-        self.optimizer.zero_grad()
-        q_values = self.online_network(states)
-        q_target = q_values.clone().detach()
+    exchange = ccxt.binance()
+    symbol = 'BTC/USDT'
+    timeframe = '1h'
+    ohlcv = fetch_data_in_range(symbol, timeframe, start_date.isoformat(), end_date.isoformat())
 
-        with torch.no_grad():
-            next_q_values_online = self.online_network(next_states)
-            best_next_actions = torch.argmax(next_q_values_online, dim=1)
-            next_q_values_target = self.target_network(next_states)
-            next_q_values_target_selected = next_q_values_target.gather(1, best_next_actions.unsqueeze(1)).squeeze(1)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-        for i in range(len(batch)):
-            q_target[i, actions[i]] = rewards[i] + (1 - dones[i]) * next_q_values_target_selected[i]
+    macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
+    df['MACD'] = macd['MACD_12_26_9'].astype(float)
+    df['MACD_signal'] = macd['MACDs_12_26_9'].astype(float)
+    df['MACD_hist'] = macd['MACDh_12_26_9'].astype(float)
 
-        loss = self.criterion(q_values, q_target)
-        loss.backward()
-        self.optimizer.step()
+    stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3)
+    df['Stoch_k'] = stoch['STOCHk_14_3_3'].astype(float)
+    df['Stoch_d'] = stoch['STOCHd_14_3_3'].astype(float)
 
-        # Zapisanie strat
-        self.losses.append(loss.item())
+    df['RSI'] = ta.rsi(df['close'], length=14)
+    df['Volume_norm'] = df['volume'] / df['volume'].max()
 
-        self.target_network.load_state_dict(self.online_network.state_dict())
-
-    def plot_training_progress(self):
-        plt.plot(self.train_losses, label="Train Loss")
-        plt.xlabel("Training Step")
-        plt.ylabel("Loss")
-        plt.legend()
-        plt.title("Training Loss Over Time")
-        plt.show()
-
-    def visualize_model(self, input_size):
-        from torchviz import make_dot
-
-        dummy_input = torch.randn(1, 1, input_size).to(next(self.online_network.parameters()).device)
-        model_output = self.online_network(dummy_input)
-        graph = make_dot(model_output, params=dict(self.online_network.named_parameters()))
-        graph.render("network_visualization", format="png")
-        print("Wizualizacja modelu zapisana jako 'network_visualization.png'")
-
-    def save_model(self, filepath):
-        torch.save(self.state_dict(), filepath)
-
-    def load_model(self, filepath):
-        self.load_state_dict(torch.load(filepath))
+    root = tk.Tk()
+    app = TradingApp(root, df, start_date, end_date)
+    root.mainloop()
