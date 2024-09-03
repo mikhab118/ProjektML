@@ -102,8 +102,8 @@ class TradingApp:
 
     def start_simulation(self):
         self.current_index = 0
-        self.balance = self.initial_balance
         self.ax.clear()
+        self.load_balance()
         self.agent.losses = []  # Resetowanie listy strat na początku symulacji
         print("Rozpoczynanie symulacji...")
 
@@ -115,6 +115,18 @@ class TradingApp:
         self.data = self.fetch_new_data(self.start_date, self.end_date)
 
         self.update_chart()
+
+    def save_balance(self):
+    with open("balance.txt", "w") as f:
+        f.write(str(self.balance))
+
+    def load_balance(self):
+    if os.path.exists("balance.txt"):
+        with open("balance.txt", "r") as f:
+            self.balance = float(f.read())
+    else:
+        self.balance = self.initial_balance  # Na wypadek, gdyby plik nie istniał
+
 
     def fetch_new_data(self, start_date, end_date):
         exchange = ccxt.binance()
