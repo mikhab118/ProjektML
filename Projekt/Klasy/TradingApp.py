@@ -13,6 +13,7 @@ from torch import nn
 from lstm_agent import LSTMTradingAgent
 from data_processing import fetch_data_in_range
 import torch
+import datetime
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
 
@@ -20,8 +21,9 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
+
 class TradingApp:
-    def __init__(self, root, data):
+    def __init__(self, root, data, start_date, end_date):
         self.root = root
         self.root.title("BTC/USDT Trading Simulator")
 
@@ -30,6 +32,13 @@ class TradingApp:
         self.data = data
         self.position = None
         self.agent = LSTMTradingAgent(input_size=8, hidden_size=50, output_size=3).to(device)
+
+        self.start_date = start_date
+        self.end_date = end_date
+
+        # Inicjalizacja current_index i days_since_last_save
+        self.current_index = 0
+        self.days_since_last_save = 0
 
         model_filepath = 'agent_model.pth'
         if os.path.exists(model_filepath):
@@ -76,7 +85,8 @@ class TradingApp:
         self.plot_button = tk.Button(root, text="Pokaż wykres strat", command=self.show_training_progress)
         self.plot_button.pack()
 
-        self.start_simulation()
+        self.update_chart()
+
 
     def visualize_model(self):
         # Generowanie wizualizacji modelu DuelingDQN
@@ -95,16 +105,47 @@ class TradingApp:
         except Exception as e:
             print(f"Nie udało się zapisać wizualizacji modelu: {e}")
 
-    def start_simulation(self):
-        self.current_index = 0
-        self.balance = self.initial_balance
-        self.ax.clear()
-        self.agent.losses = []  # Resetowanie listy strat na początku symulacji
-        print("Rozpoczynanie symulacji...")
-        self.update_chart()
+    def fetch_new_data(self, start_date, end_date):
+        exchange = ccxt.binance()
+        symbol = 'BTC/USDT'
+        timeframe = '1h'
 
-        # Dodaj to po zakończeniu symulacji
-        self.agent.plot_training_progress()  # Pokaż wykres postępu treningu
+        since = start_date.isoformat()
+        until = end_date.isoformat()
+
+        ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
+
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+        # Obliczanie wskaźników technicznych
+        macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
+        if macd is not None:
+            df['MACD'] = macd['MACD_12_26_9'].astype(float)
+            df['MACD_signal'] = macd['MACDs_12_26_9'].astype(float)
+            df['MACD_hist'] = macd['MACDh_12_26_9'].astype(float)
+        else:
+            df['MACD'] = np.nan
+            df['MACD_signal'] = np.nan
+            df['MACD_hist'] = np.nan
+
+        stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3)
+        if stoch is not None:
+            df['Stoch_k'] = stoch['STOCHk_14_3_3'].astype(float)
+            df['Stoch_d'] = stoch['STOCHd_14_3_3'].astype(float)
+        else:
+            df['Stoch_k'] = np.nan
+            df['Stoch_d'] = np.nan
+
+        rsi = ta.rsi(df['close'], length=14)
+        if rsi is not None:
+            df['RSI'] = rsi.astype(float)
+        else:
+            df['RSI'] = np.nan
+
+        df['Volume_norm'] = df['volume'] / df['volume'].max()
+
+        return df
 
     def show_training_progress(self):
         self.agent.plot_training_progress()
@@ -151,23 +192,27 @@ class TradingApp:
 
             if self.position:
                 if self.position['direction'] == "long":
-                    if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position['stop_loss']:
+                    if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position[
+                        'stop_loss']:
                         print("Zamykanie pozycji LONG.")
                         self.close_position(current_data['close'], moving_average, volume)
                 elif self.position['direction'] == "short":
-                    if current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position['take_profit']:
+                    if current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position[
+                        'take_profit']:
                         print("Zamykanie pozycji SHORT.")
                         self.close_position(current_data['close'], moving_average, volume)
 
+            # Zapisz model raz na 30 dni i resetuj wykres
+            self.days_since_last_save += 1
+            if self.days_since_last_save >= 30 * 24:  # 30 dni po 24 godziny
+                model_filepath = 'agent_model.pth'
+                self.agent.save_model(model_filepath)
+                print("Model zapisany po 30 dniach.")
+                self.ax.clear()  # Resetowanie wykresu
+                self.days_since_last_save = 0  # Resetowanie licznika dni
+
             self.current_index += 1
             self.root.after(100, self.update_chart)
-        else:
-            model_filepath = 'agent_model.pth'
-            self.agent.save_model(model_filepath)
-            with open("final_balance.txt", "a") as file:
-                file.write(f"{self.balance}\n")
-            print("Symulacja zakończona. Zapisano wynik.")
-            self.start_simulation()
 
     def agent_act(self, state):
         action = self.agent.act(state)
@@ -196,7 +241,8 @@ class TradingApp:
                 return
 
             confidence = 0.7
-            take_profit, stop_loss = self.agent.calculate_dynamic_tp_sl(direction, entry_price, entry_price, 0.7, confidence)
+            take_profit, stop_loss = self.agent.calculate_dynamic_tp_sl(direction, entry_price, entry_price, 0.7,
+                                                                        confidence)
 
             self.position = {
                 'direction': direction,
@@ -208,7 +254,8 @@ class TradingApp:
             }
             self.balance -= investment_amount
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
-            print(f"Opened {direction} position at {entry_price}. TP: {take_profit}. SL: {stop_loss}. Investment amount: {investment_amount}")
+            print(
+                f"Opened {direction} position at {entry_price}. TP: {take_profit}. SL: {stop_loss}. Investment amount: {investment_amount}")
 
     def close_position(self, closing_price, moving_average, volume):
         if self.position:
@@ -241,14 +288,15 @@ class TradingApp:
 
             self.position = None
 
+
 if __name__ == "__main__":
+    start_date = datetime.datetime(2023, 1, 1)
+    end_date = datetime.datetime(2023, 12, 1)
+
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
     timeframe = '1h'
-    since = '2022-04-01T00:00:00Z'
-    until = '2022-06-01T00:00:00Z'
-
-    ohlcv = fetch_data_in_range(symbol, timeframe, since, until)
+    ohlcv = fetch_data_in_range(symbol, timeframe, start_date.isoformat(), end_date.isoformat())
 
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -266,5 +314,5 @@ if __name__ == "__main__":
     df['Volume_norm'] = df['volume'] / df['volume'].max()
 
     root = tk.Tk()
-    app = TradingApp(root, df)
+    app = TradingApp(root, df, start_date, end_date)
     root.mainloop()
