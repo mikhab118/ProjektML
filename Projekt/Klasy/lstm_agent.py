@@ -3,7 +3,9 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import random
-
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 
 from matplotlib import pyplot as plt
 from torchviz import make_dot
@@ -16,25 +18,26 @@ class DuelingDQN(nn.Module):
         super(DuelingDQN, self).__init__()
         self.hidden_size = hidden_size
 
-        # Wspólna warstwa LSTM
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers=3, batch_first=True)
+        # Wspólna warstwa LSTM z Dropout
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers=3, batch_first=True, dropout=0.2)
 
-        # Strumień wartości stanu (Value Stream)
+        # Strumień wartości stanu (Value Stream) z Dropout
         self.value_stream = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
+            nn.Dropout(0.2),  # Dodanie Dropout
             nn.Linear(hidden_size // 2, 1)
         )
 
-        # Strumień przewagi akcji (Advantage Stream)
+        # Strumień przewagi akcji (Advantage Stream) z Dropout
         self.advantage_stream = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
+            nn.Dropout(0.2),  # Dodanie Dropout
             nn.Linear(hidden_size // 2, output_size)
         )
 
     def forward(self, x):
-        # x powinien mieć wymiary (batch_size, seq_len, input_size)
         batch_size = x.size(0)
         h0 = torch.zeros(3, batch_size, self.hidden_size).to(x.device)
         c0 = torch.zeros(3, batch_size, self.hidden_size).to(x.device)
@@ -48,10 +51,9 @@ class DuelingDQN(nn.Module):
         q_values = value + (advantage - advantage.mean(dim=1, keepdim=True))
         return q_values
 
-
 class LSTMTradingAgent(nn.Module):
-    def __init__(self, input_size=8, hidden_size=50, output_size=3, memory_size=5000, batch_size=512, epsilon_start=0.9,
-                 epsilon_min=0.05, epsilon_decay=0.995):
+    def __init__(self, input_size=8, hidden_size=100, output_size=3, memory_size=5000, batch_size=2048, epsilon_start=0.5,
+                 epsilon_min=0.1, epsilon_decay=0.995):
         super(LSTMTradingAgent, self).__init__()
         self.hidden_size = hidden_size
         self.memory_size = memory_size
@@ -67,10 +69,33 @@ class LSTMTradingAgent(nn.Module):
         self.online_network = DuelingDQN(input_size, hidden_size, output_size)
         self.target_network = DuelingDQN(input_size, hidden_size, output_size)
 
-        self.optimizer = optim.AdamW(self.parameters(), lr=1e-4)
-        self.criterion = nn.SmoothL1Loss()
+        self.optimizer = optim.AdamW(self.parameters())
+        self.criterion = nn.MSELoss()
 
         self.target_network.load_state_dict(self.online_network.state_dict())
+
+        # Inicjalizacja modelu XGBoost
+        self.xgb_model = None
+        self.train_xgb_model()
+
+    def train_xgb_model(self):
+        if len(self.replay_memory) < self.memory_size:
+            return  # Upewnij się, że jest wystarczająca ilość danych do trenowania
+
+        data = np.array(self.replay_memory)
+        states = np.array([x[0].cpu().numpy() for x in data])
+        rewards = np.array([x[2] for x in data])
+
+        X_train, X_test, y_train, y_test = train_test_split(states, rewards, test_size=0.2, random_state=42)
+
+        # Tworzenie i trenowanie modelu XGBoost
+        self.xgb_model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss')
+        self.xgb_model.fit(X_train, y_train)
+
+        # Predykcja i ocena modelu
+        predictions = self.xgb_model.predict(X_test)
+        accuracy = accuracy_score(y_test, predictions)
+        print(f'XGBoost model accuracy: {accuracy * 100:.2f}%')
 
     def act(self, state):
         actions = [0, 1, 2]  # 0: LONG, 1: SHORT, 2: No-Op
@@ -90,16 +115,20 @@ class LSTMTradingAgent(nn.Module):
                 q_values = self.online_network(state_tensor)
                 best_q_action = torch.argmax(q_values).item()
 
-            # Symulacja wszystkich akcji
-            simulated_rewards = [self.simulate_action(state, action) for action in actions]
+            # Użycie modelu XGBoost do predykcji
+            if self.xgb_model is not None:
+                xgb_input = state.cpu().numpy().reshape(1, -1)
+                xgb_prediction = self.xgb_model.predict(xgb_input)[0]
 
-            # Połącz decyzje Q-learning z symulacją
-            if torch.max(q_values).item() < 0.5 or simulated_rewards[best_q_action] < 0:
-                action = np.argmax(simulated_rewards)
+                # Połączenie decyzji Q-learning z predykcją XGBoost
+                if xgb_prediction > 0:
+                    action = best_q_action
+                else:
+                    action = 2  # No-Op, jeżeli XGBoost sugeruje brak akcji
             else:
                 action = best_q_action
 
-            print("Agent wybiera akcję na podstawie Dueling DQN z Q-values i symulacji:",
+            print("Agent wybiera akcję na podstawie Dueling DQN z Q-values i predykcji XGBoost:",
                   "LONG" if action == 0 else "SHORT" if action == 1 else "No-Op")
 
             self.train()
@@ -111,26 +140,8 @@ class LSTMTradingAgent(nn.Module):
         self.last_action = action
         return action
 
-    def plot_training_progress(self):
-        fig, ax1 = plt.subplots()
-
-        color = 'tab:red'
-        ax1.set_xlabel('Training Step')
-        ax1.set_ylabel('Loss', color=color)
-        ax1.plot(self.train_losses, color=color, label='Train Loss')
-        ax1.tick_params(axis='y', labelcolor=color)
-
-        ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
-        color = 'tab:blue'
-        ax2.set_ylabel('Epsilon', color=color)  # we already handled the x-label with ax1
-        ax2.plot([self.epsilon], color=color, label='Epsilon')
-        ax2.tick_params(axis='y', labelcolor=color)
-
-        fig.tight_layout()  # otherwise the right y-label is slightly clipped
-        plt.title("Training Loss and Epsilon Over Time")
-        plt.show()
-
     def calculate_dynamic_tp_sl(self, direction, current_price, moving_average, volume, agent_confidence):
+        global take_profit, stop_loss
         if len(self.replay_memory) < 2:
             print("Za mało danych w replay_memory do obliczenia zmienności.")
             return current_price * 1.03, current_price * 0.97  # Ustawienie domyślnych wartości
@@ -183,16 +194,7 @@ class LSTMTradingAgent(nn.Module):
         else:  # No-Op
             price_change = price
 
-        # Wykorzystanie wskaźników technicznych do dostosowania prognozowanej zmiany ceny
-        if rsi > 70:
-            price_change *= 0.98 if action == 0 else 1.02
-        elif rsi < 30:
-            price_change *= 1.02 if action == 0 else 0.98
 
-        if macd > 0:
-            price_change *= 1.01 if action == 0 else 0.99
-        elif macd < 0:
-            price_change *= 0.99 if action == 0 else 1.01
 
         if volume > np.mean(
                 [s[2].cpu().numpy() if isinstance(s[2], torch.Tensor) else s[2] for s in self.replay_memory[-10:]]):
@@ -209,28 +211,35 @@ class LSTMTradingAgent(nn.Module):
         return profit_loss
 
     def reward(self, profit_loss, holding_time, market_volatility, new_state, done):
+        reward_value = 0
         if profit_loss > 0:
-            reward_value = profit_loss ** 2
+            reward_value = profit_loss * 5
+            if holding_time <= 5:
+                reward_value += profit_loss ** 2
         else:
-            reward_value = profit_loss
+            reward_value = profit_loss * 3
 
-        if holding_time > 10:
-            if profit_loss < 0:
-                reward_value -= holding_time * 0.02
+        if holding_time > 10 and profit_loss < 0:
+            reward_value -= holding_time * 0.1
+
+        if market_volatility > 0.05 and profit_loss < 0:
+            reward_value -= market_volatility * 0.2
+
+        if len(new_state) > 3:
+            if self.last_action == 0 and new_state[3].item() <= 70:
+                reward_value += 1.0
+            elif self.last_action == 1 and new_state[3].item() >= 30:
+                reward_value += 1.0
             else:
-                reward_value -= holding_time * 0.01
+                reward_value -= 1.0
 
-        if market_volatility > 0.05:
-            if profit_loss > 0:
-                reward_value += market_volatility * 0.1
-            else:
-                reward_value -= market_volatility * 0.05
+        if done and profit_loss > 0:
+            reward_value += profit_loss * 2
+        elif done and profit_loss < 0:
+            reward_value -= abs(profit_loss) * 2
 
-        if profit_loss > 100:
-            reward_value += 50
-
-        if profit_loss < 0:
-            reward_value += profit_loss * 1.5
+        if profit_loss == 0:
+            reward_value -= 0.1
 
         self.replay_memory.append((self.last_state, self.last_action, reward_value, new_state, done))
         if len(self.replay_memory) > self.memory_size:
@@ -269,7 +278,7 @@ class LSTMTradingAgent(nn.Module):
         self.optimizer.step()
 
         # Zapisanie strat
-        self.losses.append(loss.item())
+        self.train_losses.append(loss.item())
 
         self.target_network.load_state_dict(self.online_network.state_dict())
 
