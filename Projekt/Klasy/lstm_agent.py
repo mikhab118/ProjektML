@@ -62,6 +62,7 @@ class LSTMTradingAgent(nn.Module):
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
         self.replay_memory = []
+        self.combined_reward = 0
 
         self.train_losses = []  # Lista do przechowywania strat podczas treningu
 
@@ -212,36 +213,43 @@ class LSTMTradingAgent(nn.Module):
 
     def reward(self, profit_loss, holding_time, market_volatility, new_state, done):
         reward_value = 0
+        # Wzmocnienie nagród za zyski
         if profit_loss > 0:
-            reward_value = profit_loss * 5
+            reward_value = profit_loss * 2  # Podwójna nagroda za zyski
             if holding_time <= 5:
-                reward_value += profit_loss ** 2
+                reward_value += profit_loss * 3  # Większa nagroda za szybkie zyski
         else:
-            reward_value = profit_loss * 3
+            reward_value = profit_loss * 5  # Zwiększona kara za straty
 
+        # Kara za długie trzymanie stratnej pozycji
         if holding_time > 10 and profit_loss < 0:
-            reward_value -= holding_time * 0.1
+            reward_value -= holding_time * 0.2
 
+        # Kara za bezczynność
+        if profit_loss == 0 and not done:
+            reward_value -= 0.5  # Kara za brak zysku
+
+        # Kara za podejmowanie ryzykownych działań przy wysokiej zmienności rynku
         if market_volatility > 0.05 and profit_loss < 0:
-            reward_value -= market_volatility * 0.2
+            reward_value -= market_volatility * 0.3
 
+        # Kara za podejmowanie decyzji w oparciu o niekorzystne wskaźniki techniczne
         if len(new_state) > 3:
-            if self.last_action == 0 and new_state[3].item() <= 70:
-                reward_value += 1.0
-            elif self.last_action == 1 and new_state[3].item() >= 30:
-                reward_value += 1.0
-            else:
-                reward_value -= 1.0
+            if self.last_action == 0 and new_state[3].item() > 70:  # LONG przy RSI > 70
+                reward_value -= 2.0
+            elif self.last_action == 1 and new_state[3].item() < 30:  # SHORT przy RSI < 30
+                reward_value -= 2.0
 
+        # Nagroda za realizację zysków lub szybką reakcję na straty
         if done and profit_loss > 0:
-            reward_value += profit_loss * 2
+            reward_value += profit_loss * 3
         elif done and profit_loss < 0:
-            reward_value -= abs(profit_loss) * 2
+            reward_value -= abs(profit_loss) * 3
 
-        if profit_loss == 0:
-            reward_value -= 0.1
+        self.combined_reward += reward_value
+        print(f"skumulowana nagroda: {self.combined_reward}" )
 
-        self.replay_memory.append((self.last_state, self.last_action, reward_value, new_state, done))
+        self.replay_memory.append((self.last_state, self.last_action, self.combined_reward, new_state, done))
         if len(self.replay_memory) > self.memory_size:
             self.replay_memory.pop(0)
 
