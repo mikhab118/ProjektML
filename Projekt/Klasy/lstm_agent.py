@@ -82,8 +82,9 @@ class LSTMTradingAgent(nn.Module):
         self.train_xgb_model()
 
     def train_xgb_model(self):
+        # Częstsze trenowanie modelu XGBoost
         if len(self.replay_memory) < self.memory_size:
-            return  # Upewnij się, że jest wystarczająca ilość danych do trenowania
+            return
 
         data = np.array(self.replay_memory)
         states = np.array([x[0].cpu().numpy() for x in data])
@@ -91,11 +92,9 @@ class LSTMTradingAgent(nn.Module):
 
         X_train, X_test, y_train, y_test = train_test_split(states, rewards, test_size=0.2, random_state=42)
 
-        # Tworzenie i trenowanie modelu XGBoost
         self.xgb_model = xgb.XGBClassifier(use_label_encoder=False, eval_metric='logloss')
         self.xgb_model.fit(X_train, y_train)
 
-        # Predykcja i ocena modelu
         predictions = self.xgb_model.predict(X_test)
         accuracy = accuracy_score(y_test, predictions)
         print(f'XGBoost model accuracy: {accuracy * 100:.2f}%')
@@ -124,15 +123,19 @@ class LSTMTradingAgent(nn.Module):
     def act(self, state):
         actions = [0, 1, 2]  # 0: LONG, 1: SHORT, 2: No-Op
 
+        # Jeśli epsilon jest losowe, agent wybiera losowo akcję
         if random.random() < self.epsilon:
             action = random.choice(actions)
             print("Agent wybiera akcję losowo:", "LONG" if action == 0 else "SHORT" if action == 1 else "No-Op")
         else:
+            # Ustawienie sieci w trybie oceny (evaluation mode)
             self.eval()
 
+            # Konwersja stanu na tensor i wysyłanie na GPU/CPU
             state_tensor = state.clone().detach().unsqueeze(0).unsqueeze(0).to(
                 next(self.online_network.parameters()).device)
 
+            # Oblicz wartości Q dla wszystkich akcji
             with torch.no_grad():
                 q_values = self.online_network(state_tensor)
                 best_q_action = torch.argmax(q_values).item()
@@ -141,27 +144,27 @@ class LSTMTradingAgent(nn.Module):
                 print(f"Monitoring Q-values for state {state.cpu().numpy()}:")
                 print(f"Q-values: {q_values.cpu().numpy()}")
 
-            current_price = state[0].item()
-            moving_average = state[1].item()
-            volume = state[2].item()
-            volatility = np.std([s[0].cpu().numpy() for s in self.replay_memory[-10:]]) if len(
-                self.replay_memory) >= 10 else 0.05
+            # Sprawdzanie, czy XGBoost jest gotowy i wytrenowany
+            if self.xgb_model is not None:
+                # Przygotowanie stanu do predykcji XGBoost
+                xgb_input = state.cpu().numpy().reshape(1, -1)
+                xgb_prediction = self.xgb_model.predict(xgb_input)[0]
 
-            long_profit = self.calculate_expected_profit(0, current_price, moving_average, volume, volatility)
-            short_profit = self.calculate_expected_profit(1, current_price, moving_average, volume, volatility)
-
-            if long_profit > short_profit and long_profit > 0:
-                action = 0  # LONG
-            elif short_profit > long_profit and short_profit > 0:
-                action = 1  # SHORT
+                # Połączenie decyzji Q-learning z predykcją XGBoost
+                if xgb_prediction > 0:  # Jeśli XGBoost sugeruje akcję
+                    action = best_q_action
+                else:
+                    action = 2  # No-Op, jeśli XGBoost sugeruje brak akcji
             else:
-                action = 2  # No-Op, jeśli żadna akcja nie przynosi zysku
+                action = best_q_action  # Jeśli XGBoost nie jest wytrenowany, bazuj na Q-values
 
-            print("Agent wybiera akcję na podstawie przewidywanych zysków i strat:",
+            print("Agent wybiera akcję na podstawie Dueling DQN z Q-values i predykcji XGBoost:",
                   "LONG" if action == 0 else "SHORT" if action == 1 else "No-Op")
 
+            # Zmiana z powrotem na tryb treningowy
             self.train()
 
+        # Aktualizacja epsilon w celu stopniowego zmniejszania eksploracji
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
@@ -235,36 +238,38 @@ class LSTMTradingAgent(nn.Module):
 
     def reward(self, profit_loss, holding_time, market_volatility, new_state, done):
         reward_value = 0
+
+        # Zwiększenie nagrody za trafne decyzje
         if profit_loss > 0:
-            reward_value = profit_loss * 3
+            reward_value = profit_loss * 5  # Zwiększona nagroda
             if holding_time <= 5:
-                reward_value += profit_loss * 5
+                reward_value += profit_loss * 7  # Większa nagroda za szybkie zyski
         else:
-            reward_value = profit_loss * 6
+            reward_value = profit_loss * 10  # Zwiększona kara za straty
             if holding_time > 10:
-                reward_value -= holding_time * 0.3
+                reward_value -= holding_time * 0.5  # Zwiększona kara za długie trzymanie stratnej pozycji
 
+        # Kara za brak działania, jeśli rynek oferuje możliwości zysku
         if profit_loss == 0 and not done:
-            if len(new_state) > 3:
-                if new_state[3].item() < 30 or new_state[3].item() > 70:
-                    reward_value -= 2.0
+            if len(new_state) > 3:  # Sprawdź, czy `new_state` ma wystarczająco dużo elementów
+                if new_state[3].item() < 30 or new_state[3].item() > 70:  # RSI sugeruje okazję
+                    reward_value -= 3.0  # Większa kara za brak działania
+            else:
+                print("Za mało danych w `new_state` do oceny RSI, pomijam tę część nagrody.")
 
+        # Kara za podejmowanie ryzykownych działań przy dużej zmienności
         if market_volatility > 0.05 and profit_loss < 0:
-            reward_value -= market_volatility * 0.4
+            reward_value -= market_volatility * 0.6  # Kara za ryzykowne działania
 
-        if len(new_state) > 3:
-            if self.last_action == 0 and new_state[3].item() > 70:
-                reward_value -= 3.0
-            elif self.last_action == 1 and new_state[3].item() < 30:
-                reward_value -= 3.0
-
+        # Nagroda za realizację zysków
         if done and profit_loss > 0:
-            reward_value += profit_loss * 4
+            reward_value += profit_loss * 6  # Większa nagroda za realizację zysków
         elif done and profit_loss < 0:
-            reward_value -= abs(profit_loss) * 4
+            reward_value -= abs(profit_loss) * 6  # Większa kara za realizację strat
 
+        # Kara za brak zysku (No-Op)
         if profit_loss == 0 and not done:
-            reward_value -= 1.0
+            reward_value -= 2.0  # Kara za brak działania lub brak zysku
 
         self.combined_reward += reward_value
         print(f"skumulowana nagroda: {self.combined_reward}")
