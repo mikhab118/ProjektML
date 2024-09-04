@@ -25,7 +25,7 @@ class DuelingDQN(nn.Module):
         self.value_stream = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
-            nn.Dropout(0.2),  # Dodanie Dropout
+            nn.Dropout(0.2),
             nn.Linear(hidden_size // 2, 1)
         )
 
@@ -33,7 +33,7 @@ class DuelingDQN(nn.Module):
         self.advantage_stream = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
-            nn.Dropout(0.2),  # Dodanie Dropout
+            nn.Dropout(0.2),
             nn.Linear(hidden_size // 2, output_size)
         )
 
@@ -51,9 +51,10 @@ class DuelingDQN(nn.Module):
         q_values = value + (advantage - advantage.mean(dim=1, keepdim=True))
         return q_values
 
+
 class LSTMTradingAgent(nn.Module):
-    def __init__(self, input_size=8, hidden_size=100, output_size=3, memory_size=5000, batch_size=2048, epsilon_start=0.5,
-                 epsilon_min=0.1, epsilon_decay=0.995):
+    def __init__(self, input_size=8, hidden_size=100, output_size=3, memory_size=5000, batch_size=2048,
+                 epsilon_start=0.7, epsilon_min=0.1, epsilon_decay=0.999):  # Spowolnienie zmniejszania epsilon
         super(LSTMTradingAgent, self).__init__()
         self.hidden_size = hidden_size
         self.memory_size = memory_size
@@ -63,6 +64,7 @@ class LSTMTradingAgent(nn.Module):
         self.epsilon_decay = epsilon_decay
         self.replay_memory = []
         self.combined_reward = 0
+        self.steps = 0
 
         self.train_losses = []  # Lista do przechowywania strat podczas treningu
 
@@ -98,6 +100,27 @@ class LSTMTradingAgent(nn.Module):
         accuracy = accuracy_score(y_test, predictions)
         print(f'XGBoost model accuracy: {accuracy * 100:.2f}%')
 
+    def calculate_expected_profit(self, action, current_price, moving_average, volume, volatility):
+        """
+        Ocena przewidywanych zysków lub strat dla danej akcji (LONG/SHORT).
+        Zwraca wartość przewidywanego zysku/straty dla akcji.
+        """
+        if action == 0:  # LONG
+            expected_price_change = current_price * (1 + volatility)
+            expected_profit = (expected_price_change - current_price) / current_price
+        elif action == 1:  # SHORT
+            expected_price_change = current_price * (1 - volatility)
+            expected_profit = (current_price - expected_price_change) / current_price
+        else:
+            expected_profit = 0  # No-Op doesn't generate profit or loss
+
+        if volume > moving_average:
+            expected_profit *= 1.1
+        else:
+            expected_profit *= 0.9
+
+        return expected_profit
+
     def act(self, state):
         actions = [0, 1, 2]  # 0: LONG, 1: SHORT, 2: No-Op
 
@@ -107,29 +130,34 @@ class LSTMTradingAgent(nn.Module):
         else:
             self.eval()
 
-            # Kopiowanie tensora i przeniesienie go na GPU
             state_tensor = state.clone().detach().unsqueeze(0).unsqueeze(0).to(
                 next(self.online_network.parameters()).device)
 
-            # Oblicz wartości Q dla wszystkich akcji
             with torch.no_grad():
                 q_values = self.online_network(state_tensor)
                 best_q_action = torch.argmax(q_values).item()
 
-            # Użycie modelu XGBoost do predykcji
-            if self.xgb_model is not None:
-                xgb_input = state.cpu().numpy().reshape(1, -1)
-                xgb_prediction = self.xgb_model.predict(xgb_input)[0]
+                # Logowanie wartości Q dla wszystkich akcji
+                print(f"Monitoring Q-values for state {state.cpu().numpy()}:")
+                print(f"Q-values: {q_values.cpu().numpy()}")
 
-                # Połączenie decyzji Q-learning z predykcją XGBoost
-                if xgb_prediction > 0:
-                    action = best_q_action
-                else:
-                    action = 2  # No-Op, jeżeli XGBoost sugeruje brak akcji
+            current_price = state[0].item()
+            moving_average = state[1].item()
+            volume = state[2].item()
+            volatility = np.std([s[0].cpu().numpy() for s in self.replay_memory[-10:]]) if len(
+                self.replay_memory) >= 10 else 0.05
+
+            long_profit = self.calculate_expected_profit(0, current_price, moving_average, volume, volatility)
+            short_profit = self.calculate_expected_profit(1, current_price, moving_average, volume, volatility)
+
+            if long_profit > short_profit and long_profit > 0:
+                action = 0  # LONG
+            elif short_profit > long_profit and short_profit > 0:
+                action = 1  # SHORT
             else:
-                action = best_q_action
+                action = 2  # No-Op, jeśli żadna akcja nie przynosi zysku
 
-            print("Agent wybiera akcję na podstawie Dueling DQN z Q-values i predykcji XGBoost:",
+            print("Agent wybiera akcję na podstawie przewidywanych zysków i strat:",
                   "LONG" if action == 0 else "SHORT" if action == 1 else "No-Op")
 
             self.train()
@@ -173,21 +201,18 @@ class LSTMTradingAgent(nn.Module):
         return take_profit, stop_loss
 
     def simulate_action(self, state, action):
-        # Zmienność rynku i podstawowe wskaźniki techniczne
-        price = state[0].item()  # Konwersja tensora do pojedynczej wartości
+        price = state[0].item()
         moving_average = state[1].item()
         volume = state[2].item()
         rsi = state[3].item()
         macd = state[4].item()
 
-        # Zmienność rynkowa
         if len(self.replay_memory) >= 2:
             market_volatility = np.std(
                 [s[0].cpu().numpy() if isinstance(s[0], torch.Tensor) else s[0] for s in self.replay_memory[-10:]])
         else:
-            market_volatility = 0  # lub jakaś domyślna wartość
+            market_volatility = 0
 
-        # Ustal podstawową zmianę ceny na podstawie działania
         if action == 0:  # LONG
             price_change = price * (1 + market_volatility)
         elif action == 1:  # SHORT
@@ -195,13 +220,10 @@ class LSTMTradingAgent(nn.Module):
         else:  # No-Op
             price_change = price
 
-
-
         if volume > np.mean(
                 [s[2].cpu().numpy() if isinstance(s[2], torch.Tensor) else s[2] for s in self.replay_memory[-10:]]):
             price_change *= 1.02 if action == 0 else 0.98
 
-        # Obliczenie zysku/straty na podstawie symulowanej ceny
         if action == 0:  # LONG
             profit_loss = (price_change - price) / price
         elif action == 1:  # SHORT
@@ -213,41 +235,39 @@ class LSTMTradingAgent(nn.Module):
 
     def reward(self, profit_loss, holding_time, market_volatility, new_state, done):
         reward_value = 0
-        # Wzmocnienie nagród za zyski
         if profit_loss > 0:
-            reward_value = profit_loss * 2  # Podwójna nagroda za zyski
+            reward_value = profit_loss * 3
             if holding_time <= 5:
-                reward_value += profit_loss * 3  # Większa nagroda za szybkie zyski
+                reward_value += profit_loss * 5
         else:
-            reward_value = profit_loss * 5  # Zwiększona kara za straty
+            reward_value = profit_loss * 6
+            if holding_time > 10:
+                reward_value -= holding_time * 0.3
 
-        # Kara za długie trzymanie stratnej pozycji
-        if holding_time > 10 and profit_loss < 0:
-            reward_value -= holding_time * 0.2
-
-        # Kara za bezczynność
         if profit_loss == 0 and not done:
-            reward_value -= 0.5  # Kara za brak zysku
+            if len(new_state) > 3:
+                if new_state[3].item() < 30 or new_state[3].item() > 70:
+                    reward_value -= 2.0
 
-        # Kara za podejmowanie ryzykownych działań przy wysokiej zmienności rynku
         if market_volatility > 0.05 and profit_loss < 0:
-            reward_value -= market_volatility * 0.3
+            reward_value -= market_volatility * 0.4
 
-        # Kara za podejmowanie decyzji w oparciu o niekorzystne wskaźniki techniczne
         if len(new_state) > 3:
-            if self.last_action == 0 and new_state[3].item() > 70:  # LONG przy RSI > 70
-                reward_value -= 2.0
-            elif self.last_action == 1 and new_state[3].item() < 30:  # SHORT przy RSI < 30
-                reward_value -= 2.0
+            if self.last_action == 0 and new_state[3].item() > 70:
+                reward_value -= 3.0
+            elif self.last_action == 1 and new_state[3].item() < 30:
+                reward_value -= 3.0
 
-        # Nagroda za realizację zysków lub szybką reakcję na straty
         if done and profit_loss > 0:
-            reward_value += profit_loss * 3
+            reward_value += profit_loss * 4
         elif done and profit_loss < 0:
-            reward_value -= abs(profit_loss) * 3
+            reward_value -= abs(profit_loss) * 4
+
+        if profit_loss == 0 and not done:
+            reward_value -= 1.0
 
         self.combined_reward += reward_value
-        print(f"skumulowana nagroda: {self.combined_reward}" )
+        print(f"skumulowana nagroda: {self.combined_reward}")
 
         self.replay_memory.append((self.last_state, self.last_action, self.combined_reward, new_state, done))
         if len(self.replay_memory) > self.memory_size:
@@ -285,9 +305,7 @@ class LSTMTradingAgent(nn.Module):
         loss.backward()
         self.optimizer.step()
 
-        # Zapisanie strat
         self.train_losses.append(loss.item())
-
         self.target_network.load_state_dict(self.online_network.state_dict())
 
     def plot_training_progress(self):
@@ -312,3 +330,4 @@ class LSTMTradingAgent(nn.Module):
 
     def load_model(self, filepath):
         self.load_state_dict(torch.load(filepath))
+
