@@ -36,6 +36,10 @@ class TradingApp:
         self.start_date = start_date
         self.end_date = end_date
 
+        # Inicjalizacja current_index i days_since_last_save
+        self.current_index = 0
+        self.days_since_last_save = 0
+
         model_filepath = 'agent_model.pth'
         if os.path.exists(model_filepath):
             self.agent.load_model(model_filepath)
@@ -81,7 +85,8 @@ class TradingApp:
         self.plot_button = tk.Button(root, text="Pokaż wykres strat", command=self.show_training_progress)
         self.plot_button.pack()
 
-        self.start_simulation()
+        self.update_chart()
+
 
     def visualize_model(self):
         # Generowanie wizualizacji modelu DuelingDQN
@@ -100,34 +105,6 @@ class TradingApp:
         except Exception as e:
             print(f"Nie udało się zapisać wizualizacji modelu: {e}")
 
-    def start_simulation(self):
-        self.current_index = 0
-        self.ax.clear()
-        self.load_balance()
-        self.agent.losses = []  # Resetowanie listy strat na początku symulacji
-        print("Rozpoczynanie symulacji...")
-
-        # Zaktualizowanie zakresu dat na następny miesiąc
-        self.start_date += datetime.timedelta(days=30)
-        self.end_date += datetime.timedelta(days=30)
-
-        # Pobieranie nowych danych na podstawie zaktualizowanych dat
-        self.data = self.fetch_new_data(self.start_date, self.end_date)
-
-        self.update_chart()
-
-    def save_balance(self):
-        with open("balance.txt", "w") as f:
-            f.write(str(self.balance))
-
-    def load_balance(self):
-        if os.path.exists("balance.txt"):
-            with open("balance.txt", "r") as f:
-                self.balance = float(f.read())
-        else:
-            self.balance = self.initial_balance  # Na wypadek, gdyby plik nie istniał
-
-
     def fetch_new_data(self, start_date, end_date):
         exchange = ccxt.binance()
         symbol = 'BTC/USDT'
@@ -141,16 +118,31 @@ class TradingApp:
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
+        # Obliczanie wskaźników technicznych
         macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
-        df['MACD'] = macd['MACD_12_26_9'].astype(float)
-        df['MACD_signal'] = macd['MACDs_12_26_9'].astype(float)
-        df['MACD_hist'] = macd['MACDh_12_26_9'].astype(float)
+        if macd is not None:
+            df['MACD'] = macd['MACD_12_26_9'].astype(float)
+            df['MACD_signal'] = macd['MACDs_12_26_9'].astype(float)
+            df['MACD_hist'] = macd['MACDh_12_26_9'].astype(float)
+        else:
+            df['MACD'] = np.nan
+            df['MACD_signal'] = np.nan
+            df['MACD_hist'] = np.nan
 
         stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3)
-        df['Stoch_k'] = stoch['STOCHk_14_3_3'].astype(float)
-        df['Stoch_d'] = stoch['STOCHd_14_3_3'].astype(float)
+        if stoch is not None:
+            df['Stoch_k'] = stoch['STOCHk_14_3_3'].astype(float)
+            df['Stoch_d'] = stoch['STOCHd_14_3_3'].astype(float)
+        else:
+            df['Stoch_k'] = np.nan
+            df['Stoch_d'] = np.nan
 
-        df['RSI'] = ta.rsi(df['close'], length=14)
+        rsi = ta.rsi(df['close'], length=14)
+        if rsi is not None:
+            df['RSI'] = rsi.astype(float)
+        else:
+            df['RSI'] = np.nan
+
         df['Volume_norm'] = df['volume'] / df['volume'].max()
 
         return df
@@ -186,18 +178,22 @@ class TradingApp:
                 previous_close = self.data['close'].iloc[self.current_index - 1]
                 current_close = self.data['close'].iloc[self.current_index]
                 color = 'green' if current_close >= previous_close else 'red'
+                # Dodajemy segment na wykres
                 self.ax.plot(self.data['timestamp'][self.current_index - 1:self.current_index + 1],
                              self.data['close'][self.current_index - 1:self.current_index + 1],
                              color=color)
 
+            # Aktualizowanie elementów wykresu
             self.ax.grid(True)
             self.ax.set_title(f"BTC/USDT Trading Simulator")
             self.ax.set_xlabel("Time")
             self.ax.set_ylabel("Price")
             self.canvas.draw()
 
+            # Decyzje agenta
             self.agent_act(state)
 
+            # Zamykanie pozycji
             if self.position:
                 if self.position['direction'] == "long":
                     if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position[
@@ -210,15 +206,38 @@ class TradingApp:
                         print("Zamykanie pozycji SHORT.")
                         self.close_position(current_data['close'], moving_average, volume)
 
+            # Zapis co 30 dni
+            self.days_since_last_save += 1
+            if self.days_since_last_save >= 30 * 24:  # 30 dni po 24 godziny
+                model_filepath = 'agent_model.pth'
+                self.agent.save_model(model_filepath)
+                print("Model zapisany po 30 dniach.")
+                self.ax.clear()  # Resetowanie wykresu
+                self.days_since_last_save = 0  # Resetowanie licznika dni
+
             self.current_index += 1
-            self.root.after(100, self.update_chart)
         else:
-            model_filepath = 'agent_model.pth'
-            self.agent.save_model(model_filepath)
-            with open("final_balance.txt", "a") as file:
-                file.write(f"{self.balance}\n")
-            print("Symulacja zakończona. Zapisano wynik.")
-            self.start_simulation()
+            # Jeśli dotarliśmy do końca danych, resetujemy symulację
+            print("Koniec danych - resetowanie symulacji.")
+            self.current_index = 0
+            self.balance = self.initial_balance
+            self.position = None
+
+            # Czyszczenie wykresu
+            self.ax.clear()  # Usunięcie starego wykresu
+            self.ax.grid(True)  # Przywrócenie siatki
+            self.ax.set_title(f"BTC/USDT Trading Simulator")  # Ustawienie tytułu
+            self.ax.set_xlabel("Time")  # Etykieta osi X
+            self.ax.set_ylabel("Price")  # Etykieta osi Y
+
+            # Inicjalizacja ponownego rysowania wykresu
+            self.canvas.draw()
+
+            # Restart symulacji
+            self.update_chart()
+
+        # Automatyczna aktualizacja po 100 ms
+        self.root.after(100, self.update_chart)
 
     def agent_act(self, state):
         action = self.agent.act(state)
@@ -296,8 +315,8 @@ class TradingApp:
 
 
 if __name__ == "__main__":
-    start_date = datetime.datetime(2021, 1, 1)
-    end_date = datetime.datetime(2021, 2, 1)
+    start_date = datetime.datetime(2021, 3, 1)
+    end_date = datetime.datetime(2023, 1, 1)
 
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
