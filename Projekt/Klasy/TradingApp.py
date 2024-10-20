@@ -178,18 +178,22 @@ class TradingApp:
                 previous_close = self.data['close'].iloc[self.current_index - 1]
                 current_close = self.data['close'].iloc[self.current_index]
                 color = 'green' if current_close >= previous_close else 'red'
+                # Dodajemy segment na wykres
                 self.ax.plot(self.data['timestamp'][self.current_index - 1:self.current_index + 1],
                              self.data['close'][self.current_index - 1:self.current_index + 1],
                              color=color)
 
+            # Aktualizowanie elementów wykresu
             self.ax.grid(True)
             self.ax.set_title(f"BTC/USDT Trading Simulator")
             self.ax.set_xlabel("Time")
             self.ax.set_ylabel("Price")
             self.canvas.draw()
 
+            # Decyzje agenta
             self.agent_act(state)
 
+            # Zamykanie pozycji
             if self.position:
                 if self.position['direction'] == "long":
                     if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position[
@@ -202,7 +206,7 @@ class TradingApp:
                         print("Zamykanie pozycji SHORT.")
                         self.close_position(current_data['close'], moving_average, volume)
 
-            # Zapisz model raz na 30 dni i resetuj wykres
+            # Zapis co 30 dni
             self.days_since_last_save += 1
             if self.days_since_last_save >= 30 * 24:  # 30 dni po 24 godziny
                 model_filepath = 'agent_model.pth'
@@ -212,7 +216,28 @@ class TradingApp:
                 self.days_since_last_save = 0  # Resetowanie licznika dni
 
             self.current_index += 1
-            self.root.after(100, self.update_chart)
+        else:
+            # Jeśli dotarliśmy do końca danych, resetujemy symulację
+            print("Koniec danych - resetowanie symulacji.")
+            self.current_index = 0
+            self.balance = self.initial_balance
+            self.position = None
+
+            # Czyszczenie wykresu
+            self.ax.clear()  # Usunięcie starego wykresu
+            self.ax.grid(True)  # Przywrócenie siatki
+            self.ax.set_title(f"BTC/USDT Trading Simulator")  # Ustawienie tytułu
+            self.ax.set_xlabel("Time")  # Etykieta osi X
+            self.ax.set_ylabel("Price")  # Etykieta osi Y
+
+            # Inicjalizacja ponownego rysowania wykresu
+            self.canvas.draw()
+
+            # Restart symulacji
+            self.update_chart()
+
+        # Automatyczna aktualizacja po 100 ms
+        self.root.after(100, self.update_chart)
 
     def agent_act(self, state):
         action = self.agent.act(state)
@@ -290,8 +315,8 @@ class TradingApp:
 
 
 if __name__ == "__main__":
-    start_date = datetime.datetime(2022, 1, 1)
-    end_date = datetime.datetime(2024, 1, 1)
+    start_date = datetime.datetime(2021, 3, 1)
+    end_date = datetime.datetime(2023, 1, 1)
 
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
