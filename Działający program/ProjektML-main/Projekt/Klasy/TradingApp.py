@@ -1,4 +1,8 @@
 import warnings
+import matplotlib.dates as mdates
+import matplotlib.ticker as ticker
+from matplotlib.dates import DateFormatter
+from mpmath import mpf
 from torchviz import make_dot
 import tkinter as tk
 import ccxt
@@ -14,12 +18,18 @@ from lstm_agent import LSTMTradingAgent
 from data_processing import fetch_data_in_range
 import torch
 import datetime
+from PIL import Image, ImageTk
+import mplfinance as mpf  # upewnij się, że ten import jest na początku pliku
+from lstm_agent import detect_head_and_shoulders, detect_double_top_bottom, detect_symmetrical_triangle, detect_flag, detect_wedge
+
+import io
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
 
 # Sprawdzenie dostępności CUDA
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
+
 
 
 class TradingApp:
@@ -81,9 +91,7 @@ class TradingApp:
         self.canvas = FigureCanvasTkAgg(self.figure, master=root)
         self.canvas.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Dodajemy przycisk do wyświetlania wykresu strat
-        self.plot_button = tk.Button(root, text="Pokaż wykres strat", command=self.show_training_progress)
-        self.plot_button.pack()
+
 
         self.update_chart()
 
@@ -150,103 +158,171 @@ class TradingApp:
     def show_training_progress(self):
         self.agent.plot_training_progress()
 
+    def detect_pattern(data_subset):
+        """
+        Wykrywa formacje świecowe i zwraca identyfikator formacji.
+        0 = brak formacji, 1 = formacja głowy z ramionami, 2 = formacja podwójnego szczytu/dna itd.
+        """
+        # Przykład wykrywania prostej formacji "głowa z ramionami"
+        if len(data_subset) >= 5:
+            middle = len(data_subset) // 2
+            left = data_subset['close'].iloc[:middle]
+            right = data_subset['close'].iloc[middle + 1:]
+            head = data_subset['close'].iloc[middle]
+
+            if left.max() < head and right.max() < head:
+                return 1  # "Głowa z ramionami"
+        return 0  # Brak formacji
+
     def update_chart(self):
         if self.current_index < len(self.data):
             current_data = self.data.iloc[self.current_index]
 
-            window_size = 10
+            # Ustawienie okna na jeden tydzień (168 godzin)
+            window_size = 168
             if self.current_index >= window_size:
                 moving_average = np.mean(self.data['close'].iloc[self.current_index - window_size:self.current_index])
+                data_subset = self.data.iloc[self.current_index - window_size:self.current_index].copy()
+                data_subset.index = data_subset['timestamp']
             else:
                 moving_average = current_data['close']
+                data_subset = self.data.iloc[:self.current_index].copy()
+                data_subset.index = data_subset['timestamp']
 
             volume = current_data['volume']
-
             rsi = float(current_data['RSI'])
             macd = float(current_data['MACD'])
             macd_signal = float(current_data['MACD_signal'])
             stoch_k = float(current_data['Stoch_k'])
             stoch_d = float(current_data['Stoch_d'])
 
-            state = np.array([current_data['close'], moving_average, volume, rsi, macd, macd_signal, stoch_k, stoch_d])
+            # Wykrywanie formacji, jeśli data_subset ma wystarczającą liczbę wierszy
+            if len(data_subset) >= 5:  # Dopasuj liczbę do minimalnej liczby wierszy potrzebnej do wykrycia formacji
+                data_subset = detect_head_and_shoulders(data_subset)
+                data_subset = detect_double_top_bottom(data_subset)
+                data_subset = detect_symmetrical_triangle(data_subset)
+                data_subset = detect_flag(data_subset)
+                data_subset = detect_wedge(data_subset)
 
+                # Dodanie wykrywania formacji z danych świecowych
+                pattern_info = {
+                    'head_and_shoulders': data_subset['head_and_shoulders'].iloc[-1],
+                    'double_top_bottom': data_subset['double_top_bottom'].iloc[-1],
+                    'symmetrical_triangle': data_subset['symmetrical_triangle'].iloc[-1],
+                    'flag': data_subset['flag'].iloc[-1],
+                    'wedge': data_subset['wedge'].iloc[-1]
+                }
+            else:
+                pattern_info = {
+                    'head_and_shoulders': 0,
+                    'double_top_bottom': 0,
+                    'symmetrical_triangle': 0,
+                    'flag': 0,
+                    'wedge': 0
+                }
+
+            print(f"Detected pattern ID: {pattern_info}")
+
+            # Stan wejściowy dla agenta, rozszerzony o id wykrytej formacji
+            state = np.array(
+                [current_data['close'], moving_average, volume, rsi, macd, macd_signal, stoch_k, stoch_d])
             state = torch.tensor(state, dtype=torch.float32).to(device)
 
             print(f"Agent analizuje cenę: {current_data['close']}")
 
-            if self.current_index > 0:
-                previous_close = self.data['close'].iloc[self.current_index - 1]
-                current_close = self.data['close'].iloc[self.current_index]
-                color = 'green' if current_close >= previous_close else 'red'
-                # Dodajemy segment na wykres
-                self.ax.plot(self.data['timestamp'][self.current_index - 1:self.current_index + 1],
-                             self.data['close'][self.current_index - 1:self.current_index + 1],
-                             color=color)
+            # Konwersja dat na format wymagany przez matplotlib
+            data_subset['timestamp'] = mdates.date2num(data_subset['timestamp'])
 
-            # Aktualizowanie elementów wykresu
-            self.ax.grid(True)
-            self.ax.set_title(f"BTC/USDT Trading Simulator")
+            # Wyczyść poprzedni wykres
+            self.ax.clear()
+
+            # Rysowanie wykresu świecowego z węższymi świecami
+            candle_width = 0.05  # Mniejsza szerokość świecy
+            for idx, row in data_subset.iterrows():
+                color = 'green' if row['close'] >= row['open'] else 'red'
+                # Knot świecy (low do high)
+                self.ax.plot([row['timestamp'], row['timestamp']], [row['low'], row['high']], color=color)
+                # Korpus świecy (open do close)
+                self.ax.plot([row['timestamp'] - candle_width / 2, row['timestamp'] + candle_width / 2],
+                             [row['open'], row['open']], color=color, linewidth=2)
+                self.ax.plot([row['timestamp'] - candle_width / 2, row['timestamp'] + candle_width / 2],
+                             [row['close'], row['close']], color=color, linewidth=2)
+
+            # Ustawienia wykresu
+            self.ax.xaxis_date()
+            self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            self.ax.xaxis.set_major_locator(ticker.MaxNLocator(7))  # Więcej etykiet na osi czasu
+            self.ax.set_title("BTC/USDT Trading Simulator")
             self.ax.set_xlabel("Time")
             self.ax.set_ylabel("Price")
+            self.ax.grid(True)
+
+            # Aktualizacja canvas
             self.canvas.draw()
 
-            # Decyzje agenta
-            self.agent_act(state)
+            # Decyzje agenta, z rozszerzonym stanem o wzorzec wykryty z wykresu
+            self.agent_act(state, pattern_info)
 
-            # Zamykanie pozycji
+            # Zamykanie pozycji, jeśli warunki są spełnione
             if self.position:
-                if self.position['direction'] == "long":
-                    if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position[
-                        'stop_loss']:
-                        print("Zamykanie pozycji LONG.")
-                        self.close_position(current_data['close'], moving_average, volume)
-                elif self.position['direction'] == "short":
-                    if current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position[
-                        'take_profit']:
-                        print("Zamykanie pozycji SHORT.")
-                        self.close_position(current_data['close'], moving_average, volume)
+                if self.position['direction'] == "long" and (
+                        current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position[
+                    'stop_loss']):
+                    print("Zamykanie pozycji LONG.")
+                    self.close_position(current_data['close'], moving_average, volume)
+                elif self.position['direction'] == "short" and (
+                        current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position[
+                    'take_profit']):
+                    print("Zamykanie pozycji SHORT.")
+                    self.close_position(current_data['close'], moving_average, volume)
 
-            # Zapis co 30 dni
+            # Zapis modelu co 30 dni
             self.days_since_last_save += 1
-            if self.days_since_last_save >= 30 * 24:  # 30 dni po 24 godziny
+            if self.days_since_last_save >= 30 * 24:
                 model_filepath = 'agent_model.pth'
                 self.agent.save_model(model_filepath)
                 print("Model zapisany po 30 dniach.")
-                self.ax.clear()  # Resetowanie wykresu
-                self.days_since_last_save = 0  # Resetowanie licznika dni
+                self.days_since_last_save = 0
 
+            # Przejdź do następnego indeksu
             self.current_index += 1
         else:
-            # Jeśli dotarliśmy do końca danych, resetujemy symulację
+            # Koniec danych - reset symulacji
             print("Koniec danych - resetowanie symulacji.")
             self.current_index = 0
             self.balance = self.initial_balance
             self.position = None
 
-            # Czyszczenie wykresu
-            self.ax.clear()  # Usunięcie starego wykresu
-            self.ax.grid(True)  # Przywrócenie siatki
-            self.ax.set_title(f"BTC/USDT Trading Simulator")  # Ustawienie tytułu
-            self.ax.set_xlabel("Time")  # Etykieta osi X
-            self.ax.set_ylabel("Price")  # Etykieta osi Y
-
-            # Inicjalizacja ponownego rysowania wykresu
+            # Czyszczenie osi w przypadku resetowania
+            self.ax.clear()
+            self.ax.set_title("BTC/USDT Trading Simulator")
+            self.ax.set_xlabel("Time")
+            self.ax.set_ylabel("Price")
             self.canvas.draw()
 
             # Restart symulacji
             self.update_chart()
 
-        # Automatyczna aktualizacja po 100 ms
+        # Automatyczna aktualizacja co 100 ms
         self.root.after(100, self.update_chart)
 
-    def agent_act(self, state):
+    def agent_act(self, state, pattern_info):
+        # Analizuj formacje w pattern_info i wykorzystaj je w decyzjach agenta
+        # Możesz np. dodać wagi dla określonych formacji
+        if pattern_info['head_and_shoulders'] == 1:
+            print("Detected Head and Shoulders - Agent może dostosować strategię.")
+            # Dostosowanie decyzji agenta na podstawie formacji
+
+        # Inna logika agenta
         action = self.agent.act(state)
         if action == 0:
-            print("Agent wybrał: LONG")
+            print("Agent wybiera: LONG")
             self.long_position()
         elif action == 1:
-            print("Agent wybrał: SHORT")
+            print("Agent wybiera: SHORT")
             self.short_position()
+        else:
+            print("Agent wybiera: NO-OP")
 
     def long_position(self):
         self.place_order("long")
