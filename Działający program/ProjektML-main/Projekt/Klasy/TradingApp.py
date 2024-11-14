@@ -30,6 +30,10 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
+def log_transaction(transaction_type, balance, profit_loss, entry_date, end_date):
+    with open("transaction_log.txt", "a") as f:
+        f.write(f"Typ pozycji: {transaction_type}, Balans po zamknieciu pozycji: {balance:.2f}, Profit/strata z pozycji: {profit_loss:.2f}, Data otwarcia pozycji: {entry_date}, Data zamkniecia pozycji: {end_date}, Wykres: {symbol},Przedzial czasowy: {start_date} - {end_date}, Timeframe: {timeframe}\n")
+
 
 
 class TradingApp:
@@ -204,13 +208,16 @@ class TradingApp:
                 data_subset = detect_flag(data_subset)
                 data_subset = detect_wedge(data_subset)
 
-                # Dodanie wykrywania formacji z danych świecowych
+                # Dodanie wykrywania formacji z danych świecowych z filtrowaniem NaN
                 pattern_info = {
-                    'head_and_shoulders': data_subset['head_and_shoulders'].iloc[-1],
-                    'double_top_bottom': data_subset['double_top_bottom'].iloc[-1],
-                    'symmetrical_triangle': data_subset['symmetrical_triangle'].iloc[-1],
-                    'flag': data_subset['flag'].iloc[-1],
-                    'wedge': data_subset['wedge'].iloc[-1]
+                    'head_and_shoulders': data_subset['head_and_shoulders'].iloc[-1] if pd.notna(
+                        data_subset['head_and_shoulders'].iloc[-1]) else 0,
+                    'double_top_bottom': data_subset['double_top_bottom'].iloc[-1] if pd.notna(
+                        data_subset['double_top_bottom'].iloc[-1]) else 0,
+                    'symmetrical_triangle': data_subset['symmetrical_triangle'].iloc[-1] if pd.notna(
+                        data_subset['symmetrical_triangle'].iloc[-1]) else 0,
+                    'flag': data_subset['flag'].iloc[-1] if pd.notna(data_subset['flag'].iloc[-1]) else 0,
+                    'wedge': data_subset['wedge'].iloc[-1] if pd.notna(data_subset['wedge'].iloc[-1]) else 0
                 }
             else:
                 pattern_info = {
@@ -333,6 +340,7 @@ class TradingApp:
     def place_order(self, direction):
         if self.position is None:
             entry_price = self.data['close'].iloc[self.current_index]
+            entry_date = self.data['timestamp'].iloc[self.current_index]  # Pobranie daty otwarcia pozycji
 
             confidence_factor = 0.5
             investment_amount = self.balance * confidence_factor
@@ -345,9 +353,11 @@ class TradingApp:
             take_profit, stop_loss = self.agent.calculate_dynamic_tp_sl(direction, entry_price, entry_price, 0.7,
                                                                         confidence)
 
+
             self.position = {
                 'direction': direction,
                 'entry_price': entry_price,
+                'entry_date': entry_date,
                 'take_profit': take_profit,
                 'stop_loss': stop_loss,
                 'trailing_stop_loss': entry_price * (0.98 if direction == "long" else 1.02),
@@ -361,6 +371,8 @@ class TradingApp:
     def close_position(self, closing_price, moving_average, volume):
         if self.position:
             direction = self.position['direction']
+            entry_date = self.position['entry_date']  # Data otwarcia pozycji
+            end_date = self.data['timestamp'].iloc[self.current_index]  # Pobranie daty otwarcia pozycji
 
             if direction == "long":
                 profit_loss = (closing_price - self.position['entry_price']) / self.position['entry_price']
@@ -374,6 +386,8 @@ class TradingApp:
 
             profit_loss_amount = self.position['investment_amount'] * (1 + profit_loss)
             self.balance += profit_loss_amount
+
+            log_transaction(direction, self.balance, profit_loss_amount - self.position['investment_amount'], entry_date, end_date)
 
             print(
                 f"Closed {direction} position with profit/loss: {profit_loss * 100:.2f}% - ${profit_loss_amount - self.position['investment_amount']:.2f}")
@@ -392,7 +406,7 @@ class TradingApp:
 
 if __name__ == "__main__":
     start_date = datetime.datetime(2021, 3, 1)
-    end_date = datetime.datetime(2023, 1, 1)
+    end_date = datetime.datetime(2021, 4, 1)
 
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
