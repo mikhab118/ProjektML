@@ -59,6 +59,8 @@ class DuelingDQN(nn.Module):
 
 # Funkcje wykrywające formacje z dodanym logowaniem
 # Dla detekcji formacji Head and Shoulders
+# Funkcje wykrywające formacje z dodanym logowaniem
+# Dla detekcji formacji Head and Shoulders
 def detect_head_and_shoulders(df, window=10):
     # Ustawienie domyślnej wartości 0 dla całej kolumny na początku, aby uniknąć `nan`
     df['head_and_shoulders'] = 0
