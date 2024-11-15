@@ -79,7 +79,7 @@ def detect_head_and_shoulders(df, window=10):
         # Logika wykrywania "head and shoulders"
         if left_shoulder < head and right_shoulder < head and abs(left_shoulder - right_shoulder) < 0.02 * head:
             df.at[i, 'head_and_shoulders'] = 1
-            print(f"Detected Head and Shoulders at index {i} with head at {head}")
+
 
     return df
 
@@ -96,14 +96,14 @@ def detect_double_top_bottom(df, window=5):
                 df['close'].iloc[i] > df['close'].iloc[i + window] and
                 abs(df['close'].iloc[i] - df['close'].iloc[i + window]) < 0.02 * df['close'].iloc[i]):
             df.at[i, 'double_top_bottom'] = 1  # Double Top
-            print(f"Detected Double Top at index {i} with price {df['close'].iloc[i]}")
+
 
         # Double Bottom
         elif (df['close'].iloc[i] < df['close'].iloc[i - window] and
               df['close'].iloc[i] < df['close'].iloc[i + window] and
               abs(df['close'].iloc[i] - df['close'].iloc[i + window]) < 0.02 * df['close'].iloc[i]):
             df.at[i, 'double_top_bottom'] = 2  # Double Bottom
-            print(f"Detected Double Bottom at index {i} with price {df['close'].iloc[i]}")
+
 
     return df
 
@@ -120,7 +120,7 @@ def detect_symmetrical_triangle(df, window=10):
 
         if abs(highs.max() - lows.min()) < 0.02 * df['close'].iloc[i]:  # Szerokość kanału poniżej 2%
             df.at[i, 'symmetrical_triangle'] = 1
-            print(f"Detected Symmetrical Triangle at index {i} with price {df['close'].iloc[i]}")
+
 
     return df
 
@@ -137,7 +137,7 @@ def detect_flag(df, window=5):
 
         if abs(highs.max() - lows.min()) < 0.02 * df['close'].iloc[i]:  # Kanał poniżej 2%
             df.at[i, 'flag'] = 1
-            print(f"Detected Flag at index {i} with price {df['close'].iloc[i]}")
+
 
     return df
 
@@ -154,7 +154,7 @@ def detect_wedge(df, window=10):
 
         if abs(highs.max() - lows.min()) < 0.02 * df['close'].iloc[i]:  # Kanał poniżej 2%
             df.at[i, 'wedge'] = 1
-            print(f"Detected Wedge at index {i} with price {df['close'].iloc[i]}")
+
 
     return df
 
@@ -205,7 +205,7 @@ class ChartPatternCNN(nn.Module):
 
 # Klasa agenta uwzględniająca formacje wykresów
 class LSTMTradingAgent(nn.Module):
-    def __init__(self, input_size=8, hidden_size=100, output_size=3, memory_size=5000, batch_size=2048,
+    def __init__(self, input_size=8, hidden_size=100, output_size=3, memory_size=10000, batch_size=4096,
                  epsilon=0.3, epsilon_decay=0.995, epsilon_min=0.01, learning_rate=0.001):
         super(LSTMTradingAgent, self).__init__()
         self.hidden_size = hidden_size
@@ -249,18 +249,23 @@ class LSTMTradingAgent(nn.Module):
         actions = [0, 1, 2]
         self.steps += 1
 
+        # Zmniejszanie epsilon, aby szybciej przejść od eksploracji do eksploatacji
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
+        # Kopiowanie tensora i przeniesienie go na GPU
         state_tensor = state.clone().detach().unsqueeze(0).unsqueeze(0).to(
             next(self.online_network.parameters()).device)
 
+        # Oblicz wartości Q dla wszystkich akcji
         with torch.no_grad():
             q_values = self.online_network(state_tensor)
             q_values[0, 2] = 0
 
         long_q_value = q_values[0, 0].item()
         short_q_value = q_values[0, 1].item()
+
+        # Logowanie wartości Q
 
         if long_q_value > 0 and short_q_value > 0:
             action = 0 if long_q_value > short_q_value else 1
@@ -275,7 +280,7 @@ class LSTMTradingAgent(nn.Module):
         self.last_action = action
         return action
 
-    def reward(self, profit_loss, holding_time, market_volatility, new_state, done):
+    def reward(self, profit_loss, holding_time, market_volatility, new_state, done, pattern_info=None):
         reward_value = 0
         print(
             f"Calculating reward for profit/loss: {profit_loss:.4f}, holding_time: {holding_time}, market_volatility: {market_volatility}")
@@ -286,6 +291,27 @@ class LSTMTradingAgent(nn.Module):
                 reward_value += profit_loss * 3
         else:
             reward_value = profit_loss * 2
+
+        if self.last_action == 1 and profit_loss > 0:  # Udane short
+            reward_value += profit_loss * 2  # Podwój nagrodę za udane short
+        elif self.last_action == 0 and profit_loss < 0:  # Błędne long
+            reward_value -= abs(profit_loss) * 2  # Podwój karę za błędne long
+
+            # Kary za błędne decyzje i nagrody za poprawne decyzje w oparciu o formacje
+        if pattern_info:
+            if pattern_info['head_and_shoulders'] == 1 and self.last_action == 1:  # SHORT na Head & Shoulders
+                reward_value += 2  # Nagroda za właściwą reakcję na formację
+                print("Reward: Correct SHORT on Head and Shoulders pattern")
+            elif pattern_info['double_top_bottom'] == 1 and self.last_action == 1:  # SHORT na Double Top
+                reward_value += 2
+                print("Reward: Correct SHORT on Double Top pattern")
+            elif pattern_info['double_top_bottom'] == 2 and self.last_action == 0:  # LONG na Double Bottom
+                reward_value += 2
+                print("Reward: Correct LONG on Double Bottom pattern")
+            else:
+                reward_value -= 1  # Kara za zignorowanie formacji lub złą reakcję
+                print("Penalty: Ignored or incorrect reaction to pattern")
+
 
         if market_volatility > 0.05 and profit_loss < 0:
             reward_value -= market_volatility * 0.5
