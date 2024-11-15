@@ -276,12 +276,12 @@ class TradingApp:
                         current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position[
                     'stop_loss']):
                     print("Zamykanie pozycji LONG.")
-                    self.close_position(current_data['close'], moving_average, volume)
+                    self.close_position(current_data['close'], moving_average, volume, pattern_info)
                 elif self.position['direction'] == "short" and (
                         current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position[
                     'take_profit']):
                     print("Zamykanie pozycji SHORT.")
-                    self.close_position(current_data['close'], moving_average, volume)
+                    self.close_position(current_data['close'], moving_average, volume, pattern_info)
 
             # Zapis modelu co 30 dni
             self.days_since_last_save += 1
@@ -314,11 +314,6 @@ class TradingApp:
         self.root.after(100, self.update_chart)
 
     def agent_act(self, state, pattern_info):
-        # Analizuj formacje w pattern_info i wykorzystaj je w decyzjach agenta
-        # Możesz np. dodać wagi dla określonych formacji
-        if pattern_info['head_and_shoulders'] == 1:
-            print("Detected Head and Shoulders - Agent może dostosować strategię.")
-            # Dostosowanie decyzji agenta na podstawie formacji
 
         # Inna logika agenta
         action = self.agent.act(state)
@@ -368,7 +363,7 @@ class TradingApp:
             print(
                 f"Opened {direction} position at {entry_price}. TP: {take_profit}. SL: {stop_loss}. Investment amount: {investment_amount}")
 
-    def close_position(self, closing_price, moving_average, volume):
+    def close_position(self, closing_price, moving_average, volume, pattern_info):
         if self.position:
             direction = self.position['direction']
             entry_date = self.position['entry_date']  # Data otwarcia pozycji
@@ -399,14 +394,14 @@ class TradingApp:
             new_state = torch.tensor([closing_price, moving_average, volume], dtype=torch.float32).to(device)
             done = False
             self.agent.reward(profit_loss_amount - self.position['investment_amount'], holding_time, market_volatility,
-                              new_state, done)
+                              new_state, done, pattern_info)
 
             self.position = None
 
 
 if __name__ == "__main__":
     start_date = datetime.datetime(2021, 3, 1)
-    end_date = datetime.datetime(2021, 4, 1)
+    end_date = datetime.datetime(2023, 4, 1)
 
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
