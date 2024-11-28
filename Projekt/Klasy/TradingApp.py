@@ -1,4 +1,8 @@
 import warnings
+import matplotlib.dates as mdates
+import matplotlib.ticker as ticker
+from matplotlib.dates import DateFormatter
+from mpmath import mpf
 from torchviz import make_dot
 import tkinter as tk
 import ccxt
@@ -14,12 +18,24 @@ from lstm_agent import LSTMTradingAgent
 from data_processing import fetch_data_in_range
 import torch
 import datetime
+import time
+from colorama import Fore, Style
+from PIL import Image, ImageTk
+import mplfinance as mpf  # upewnij się, że ten import jest na początku pliku
+from lstm_agent import detect_head_and_shoulders, detect_double_top_bottom, detect_symmetrical_triangle, detect_flag, detect_wedge
+
+import io
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="torch")
 
 # Sprawdzenie dostępności CUDA
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
+
+def log_transaction(transaction_type, balance, profit_loss, entry_date, end_date):
+    with open("transaction_log.txt", "a") as f:
+        f.write(f"Typ pozycji: {transaction_type}, Balans po zamknieciu pozycji: {balance:.2f}, Profit/strata z pozycji: {profit_loss:.2f}, Data otwarcia pozycji: {entry_date}, Data zamkniecia pozycji: {end_date}, Wykres: {symbol},Przedzial czasowy: {start_date} - {end_date}, Timeframe: {timeframe}\n")
+
 
 
 class TradingApp:
@@ -31,7 +47,7 @@ class TradingApp:
         self.balance = self.initial_balance
         self.data = data
         self.position = None
-        self.agent = LSTMTradingAgent(input_size=8, hidden_size=50, output_size=3).to(device)
+        self.agent = LSTMTradingAgent(input_size=9, hidden_size=50, output_size=3).to(device)
 
         self.start_date = start_date
         self.end_date = end_date
@@ -81,16 +97,14 @@ class TradingApp:
         self.canvas = FigureCanvasTkAgg(self.figure, master=root)
         self.canvas.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Dodajemy przycisk do wyświetlania wykresu strat
-        self.plot_button = tk.Button(root, text="Pokaż wykres strat", command=self.show_training_progress)
-        self.plot_button.pack()
+
 
         self.update_chart()
 
 
     def visualize_model(self):
         # Generowanie wizualizacji modelu DuelingDQN
-        sample_input = torch.rand((1, 1, 8)).to(device)  # Przykładowe dane wejściowe
+        sample_input = torch.rand((1, 1, 9)).to(device)  # Przykładowe dane wejściowe
         output = self.agent.online_network(sample_input)
 
         dot = make_dot(output, params=dict(self.agent.online_network.named_parameters()))
@@ -150,103 +164,161 @@ class TradingApp:
     def show_training_progress(self):
         self.agent.plot_training_progress()
 
+    def detect_pattern(data_subset):
+        """
+        Wykrywa formacje świecowe i zwraca identyfikator formacji.
+        0 = brak formacji, 1 = formacja głowy z ramionami, 2 = formacja podwójnego szczytu/dna itd.
+        """
+        # Przykład wykrywania prostej formacji "głowa z ramionami"
+        if len(data_subset) >= 5:
+            middle = len(data_subset) // 2
+            left = data_subset['close'].iloc[:middle]
+            right = data_subset['close'].iloc[middle + 1:]
+            head = data_subset['close'].iloc[middle]
+
+            if left.max() < head and right.max() < head:
+                return 1  # "Głowa z ramionami"
+        return 0  # Brak formacji
+
     def update_chart(self):
+        if not hasattr(self, 'iteration_counter'):
+            self.iteration_counter = 0
+
+        self.iteration_counter += 1
+
         if self.current_index < len(self.data):
+            start_time = time.time()  # Rozpoczęcie pomiaru czasu
+
             current_data = self.data.iloc[self.current_index]
 
-            window_size = 10
+            # Ustawienie okna na jeden tydzień (168 godzin)
+            window_size = 168
             if self.current_index >= window_size:
                 moving_average = np.mean(self.data['close'].iloc[self.current_index - window_size:self.current_index])
+                data_subset = self.data.iloc[self.current_index - window_size:self.current_index].copy()
+                data_subset.index = data_subset['timestamp']
             else:
                 moving_average = current_data['close']
+                data_subset = self.data.iloc[:self.current_index].copy()
+                data_subset.index = data_subset['timestamp']
 
             volume = current_data['volume']
-
             rsi = float(current_data['RSI'])
             macd = float(current_data['MACD'])
             macd_signal = float(current_data['MACD_signal'])
             stoch_k = float(current_data['Stoch_k'])
             stoch_d = float(current_data['Stoch_d'])
 
-            state = np.array([current_data['close'], moving_average, volume, rsi, macd, macd_signal, stoch_k, stoch_d])
+            # Wykrywanie formacji
+            if len(data_subset) >= 5:
+                data_subset = detect_head_and_shoulders(data_subset)
+                data_subset = detect_double_top_bottom(data_subset)
+                data_subset = detect_symmetrical_triangle(data_subset)
+                data_subset = detect_flag(data_subset)
+                data_subset = detect_wedge(data_subset)
 
-            state = torch.tensor(state, dtype=torch.float32).to(device)
+                pattern_info = {
+                    'head_and_shoulders': data_subset['head_and_shoulders'].iloc[-1] if pd.notna(
+                        data_subset['head_and_shoulders'].iloc[-1]) else 0,
+                    'double_top_bottom': data_subset['double_top_bottom'].iloc[-1] if pd.notna(
+                        data_subset['double_top_bottom'].iloc[-1]) else 0,
+                    'symmetrical_triangle': data_subset['symmetrical_triangle'].iloc[-1] if pd.notna(
+                        data_subset['symmetrical_triangle'].iloc[-1]) else 0,
+                    'flag': data_subset['flag'].iloc[-1] if pd.notna(data_subset['flag'].iloc[-1]) else 0,
+                    'wedge': data_subset['wedge'].iloc[-1] if pd.notna(data_subset['wedge'].iloc[-1]) else 0
+                }
+            else:
+                pattern_info = {
+                    'head_and_shoulders': 0,
+                    'double_top_bottom': 0,
+                    'symmetrical_triangle': 0,
+                    'flag': 0,
+                    'wedge': 0
+                }
 
-            print(f"Agent analizuje cenę: {current_data['close']}")
+            # Wyświetlenie wykrytych formacji
+            print(f"Wykryte formacje: {pattern_info}")
 
-            if self.current_index > 0:
-                previous_close = self.data['close'].iloc[self.current_index - 1]
-                current_close = self.data['close'].iloc[self.current_index]
-                color = 'green' if current_close >= previous_close else 'red'
-                # Dodajemy segment na wykres
-                self.ax.plot(self.data['timestamp'][self.current_index - 1:self.current_index + 1],
-                             self.data['close'][self.current_index - 1:self.current_index + 1],
-                             color=color)
+            # Tworzenie stanu i analiza przez agenta
+            downward_signal = 1 if macd_signal > macd else 0  # Prosty sygnał spadkowy
+            state = torch.tensor(
+                [current_data['close'], moving_average, volume, rsi, macd, macd_signal, stoch_k, stoch_d,
+                 downward_signal]
+            ).float().to(device)
 
-            # Aktualizowanie elementów wykresu
-            self.ax.grid(True)
-            self.ax.set_title(f"BTC/USDT Trading Simulator")
-            self.ax.set_xlabel("Time")
-            self.ax.set_ylabel("Price")
-            self.canvas.draw()
+            print(f"Stan: Cena zamknięcia={current_data['close']:.2f}, Downward Signal={downward_signal}")
 
-            # Decyzje agenta
-            self.agent_act(state)
+            # Decyzja agenta
+            action = self.agent_act(state, pattern_info)
+
+            # Pomiar czasu wykonania iteracji
+            end_time = time.time()
+            iteration_time = (end_time - start_time) * 1000  # Czas w milisekundach
+
+            # Wyświetlenie dodatkowych informacji
+            print(f"Agent analizuje dane: Cena zamknięcia={current_data['close']:.2f}, RSI={rsi:.2f}, MACD={macd:.2f}")
+            print(f"Czas wykonania iteracji: {iteration_time:.2f} ms")
 
             # Zamykanie pozycji
             if self.position:
-                if self.position['direction'] == "long":
-                    if current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position[
-                        'stop_loss']:
-                        print("Zamykanie pozycji LONG.")
-                        self.close_position(current_data['close'], moving_average, volume)
-                elif self.position['direction'] == "short":
-                    if current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position[
-                        'take_profit']:
-                        print("Zamykanie pozycji SHORT.")
-                        self.close_position(current_data['close'], moving_average, volume)
+                if self.position['direction'] == "long" and (
+                        current_data['close'] >= self.position['take_profit'] or current_data['close'] <= self.position[
+                    'stop_loss']):
+                    self.close_position(current_data['close'], moving_average, volume, pattern_info)
+                elif self.position['direction'] == "short" and (
+                        current_data['close'] >= self.position['stop_loss'] or current_data['close'] <= self.position[
+                    'take_profit']):
+                    self.close_position(current_data['close'], moving_average, volume, pattern_info)
 
-            # Zapis co 30 dni
-            self.days_since_last_save += 1
-            if self.days_since_last_save >= 30 * 24:  # 30 dni po 24 godziny
-                model_filepath = 'agent_model.pth'
-                self.agent.save_model(model_filepath)
-                print("Model zapisany po 30 dniach.")
-                self.ax.clear()  # Resetowanie wykresu
-                self.days_since_last_save = 0  # Resetowanie licznika dni
+            # Aktualizacja wykresu co 5 iteracji
+            if self.iteration_counter % 5 == 0:
+                self.ax.clear()
+                data_subset['timestamp'] = mdates.date2num(data_subset['timestamp'])
 
+                candle_width = 0.05
+                for idx, row in data_subset.iterrows():
+                    color = 'green' if row['close'] >= row['open'] else 'red'
+                    self.ax.plot([row['timestamp'], row['timestamp']], [row['low'], row['high']], color=color)
+                    self.ax.plot([row['timestamp'] - candle_width / 2, row['timestamp'] + candle_width / 2],
+                                 [row['open'], row['open']], color=color, linewidth=2)
+                    self.ax.plot([row['timestamp'] - candle_width / 2, row['timestamp'] + candle_width / 2],
+                                 [row['close'], row['close']], color=color, linewidth=2)
+
+                self.ax.xaxis_date()
+                self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                self.ax.xaxis.set_major_locator(ticker.MaxNLocator(7))
+                self.ax.set_title("BTC/USDT Trading Simulator")
+                self.ax.set_xlabel("Time")
+                self.ax.set_ylabel("Price")
+                self.ax.grid(True)
+                self.canvas.draw()
+
+            # Przejdź do następnego indeksu
             self.current_index += 1
         else:
-            # Jeśli dotarliśmy do końca danych, resetujemy symulację
             print("Koniec danych - resetowanie symulacji.")
             self.current_index = 0
             self.balance = self.initial_balance
             self.position = None
 
-            # Czyszczenie wykresu
-            self.ax.clear()  # Usunięcie starego wykresu
-            self.ax.grid(True)  # Przywrócenie siatki
-            self.ax.set_title(f"BTC/USDT Trading Simulator")  # Ustawienie tytułu
-            self.ax.set_xlabel("Time")  # Etykieta osi X
-            self.ax.set_ylabel("Price")  # Etykieta osi Y
+        # Automatyczna aktualizacja co 100 ms
+        self.root.after(150, self.update_chart)
 
-            # Inicjalizacja ponownego rysowania wykresu
-            self.canvas.draw()
+    def agent_act(self, state, pattern_info):
 
-            # Restart symulacji
-            self.update_chart()
-
-        # Automatyczna aktualizacja po 100 ms
-        self.root.after(100, self.update_chart)
-
-    def agent_act(self, state):
+        # Inna logika agenta
         action = self.agent.act(state)
         if action == 0:
-            print("Agent wybrał: LONG")
+            print("Agent wybiera: LONG")
+            print()
             self.long_position()
         elif action == 1:
-            print("Agent wybrał: SHORT")
+            print("Agent wybiera: SHORT")
+            print()
             self.short_position()
+        else:
+            print("Agent wybiera: NO-OP")
+            print()
 
     def long_position(self):
         self.place_order("long")
@@ -257,6 +329,7 @@ class TradingApp:
     def place_order(self, direction):
         if self.position is None:
             entry_price = self.data['close'].iloc[self.current_index]
+            entry_date = self.data['timestamp'].iloc[self.current_index]  # Pobranie daty otwarcia pozycji
 
             confidence_factor = 0.5
             investment_amount = self.balance * confidence_factor
@@ -266,12 +339,22 @@ class TradingApp:
                 return
 
             confidence = 0.7
-            take_profit, stop_loss = self.agent.calculate_dynamic_tp_sl(direction, entry_price, entry_price, 0.7,
-                                                                        confidence)
+
+            # Obliczenie downward_signal
+            macd = float(self.data['MACD'].iloc[self.current_index])
+            macd_signal = float(self.data['MACD_signal'].iloc[self.current_index])
+            downward_signal = 1 if macd_signal > macd else 0
+
+            # Wywołanie calculate_dynamic_tp_sl z dodatkowymi argumentami
+            take_profit, stop_loss = self.agent.calculate_dynamic_tp_sl(
+                direction, entry_price, entry_price, 0.7, confidence, downward_signal
+            )
+
 
             self.position = {
                 'direction': direction,
                 'entry_price': entry_price,
+                'entry_date': entry_date,
                 'take_profit': take_profit,
                 'stop_loss': stop_loss,
                 'trailing_stop_loss': entry_price * (0.98 if direction == "long" else 1.02),
@@ -280,11 +363,16 @@ class TradingApp:
             self.balance -= investment_amount
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
             print(
-                f"Opened {direction} position at {entry_price}. TP: {take_profit}. SL: {stop_loss}. Investment amount: {investment_amount}")
+                Fore.GREEN +
+                f"Opened {direction} position at {entry_price}. TP: {take_profit}. SL: {stop_loss}. Investment amount: {investment_amount}" +
+                Style.RESET_ALL
+            )
 
-    def close_position(self, closing_price, moving_average, volume):
+    def close_position(self, closing_price, moving_average, volume, pattern_info):
         if self.position:
             direction = self.position['direction']
+            entry_date = self.position['entry_date']  # Data otwarcia pozycji
+            end_date = self.data['timestamp'].iloc[self.current_index]  # Pobranie daty otwarcia pozycji
 
             if direction == "long":
                 profit_loss = (closing_price - self.position['entry_price']) / self.position['entry_price']
@@ -299,8 +387,13 @@ class TradingApp:
             profit_loss_amount = self.position['investment_amount'] * (1 + profit_loss)
             self.balance += profit_loss_amount
 
+            log_transaction(direction, self.balance, profit_loss_amount - self.position['investment_amount'], entry_date, end_date)
+
             print(
-                f"Closed {direction} position with profit/loss: {profit_loss * 100:.2f}% - ${profit_loss_amount - self.position['investment_amount']:.2f}")
+                Fore.RED +
+                f"Closed {direction} position with profit/loss: {profit_loss * 100:.2f}% - ${profit_loss_amount - self.position['investment_amount']:.2f}" +
+                Style.RESET_ALL
+            )
             self.balance_label.config(text=f"STAN KONTA: ${self.balance:.2f}")
 
             holding_time = 5
@@ -309,14 +402,14 @@ class TradingApp:
             new_state = torch.tensor([closing_price, moving_average, volume], dtype=torch.float32).to(device)
             done = False
             self.agent.reward(profit_loss_amount - self.position['investment_amount'], holding_time, market_volatility,
-                              new_state, done)
+                              new_state, done, pattern_info)
 
             self.position = None
 
 
 if __name__ == "__main__":
-    start_date = datetime.datetime(2021, 3, 1)
-    end_date = datetime.datetime(2023, 1, 1)
+    start_date = datetime.datetime(2024, 11, 20)
+    end_date = datetime.datetime(2024, 12, 1)
 
     exchange = ccxt.binance()
     symbol = 'BTC/USDT'
